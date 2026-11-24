@@ -50,12 +50,13 @@ module otpu_board #(
   parameter int TMEM_PMP   = 0,
   parameter int TMEM_PRK   = 0,
   parameter int TMEM_SDM   = -1,
-  parameter string TMEM_STYLE = "block", // the pumped RAMs' (otpu_slice; "ultra": the WG targets')
-  parameter string IMEM_STYLE = "auto",  // IMEM's RAMs (otpu_slice; "ultra": the WG targets')
-  parameter string IMEM_WC_STYLE = "",   // its wait entries', if not IMEM_STYLE's (otpu_slice)
-  parameter string MXU_RF_STYLE = "block", // the MXU's result FIFO (otpu_slice; the WG targets'
+  parameter int TMEM_RQL   = 0,       //   the read ports whose data is registered (otpu_slice)
+  parameter TMEM_STYLE = "block", // the pumped RAMs' (otpu_slice; "ultra": the WG targets')
+  parameter IMEM_STYLE = "auto",  // IMEM's RAMs (otpu_slice; "ultra": the WG targets')
+  parameter IMEM_WC_STYLE = "",   // its wait entries', if not IMEM_STYLE's (otpu_slice)
+  parameter MXU_RF_STYLE = "block", // the MXU's result FIFO (otpu_slice; the WG targets'
                                           //   "distributed")
-  parameter string MXU_FIFO_STYLE = "block", // the MXU's chunk FIFO lanes (otpu_slice; the WG targets'
+  parameter MXU_FIFO_STYLE = "block", // the MXU's chunk FIFO lanes (otpu_slice; the WG targets'
                                           //   "ultra")
   parameter bit MXU_WASK   = 1'b1,      // the MXU's UltraRAM lanes read stage by stage (otpu_slice)
   parameter int MXU_RF_ROWS = 0,       // the MXU's result FIFO rows (otpu_slice; 0: its rule)
@@ -140,6 +141,9 @@ module otpu_board #(
   parameter bit ST16S       = 1'b0,    // with ST16: STREAM's flags ST16R / ST16W, one side alone (otpu_slice; CAPS2 bit18)
   parameter bit KT          = 1'b0,    // MM's K tail (otpu_slice, WG > 1; CAPS2 bit5)
   parameter int MXU_SPL     = 0,       // MM SPL, a split's terms as one MM (otpu_slice, WG > 1; CAPS2 bit25)
+  parameter bit CH_ILV      = 1'b0,    // the board's channels each on two memory ports, their bytes
+                                       //   interleaved at 32 (otpu_hbm_ch NP 2; CAPS2 bit26: the host's
+                                       //   windows lay them out alike)
   parameter bit ICACHE      = 1'b0,    // IMEM an instruction cache over the program (otpu_slice;
                                        //   CAPS2 bit12, CFG_UARCH bit28)
   parameter int IC_LINES    = 16,      // ICACHE: its lines (otpu_slice)
@@ -393,7 +397,7 @@ module otpu_board #(
               .SPLITQ(QUANT_SPLIT), .QHL(QUANT_HL), .QSTHL(QUANT_QSTHL),
               .VSIG(VPU_SIG != 0 && DSTEP && LANES == 8 && D >= 32),
               .VMAC(VPU_MAC != 0), .OUTER1(VPU_OUTER1 != 0), .QONCE(QONCE),
-              .SPLMM(MXU_SPL != 0 && WG > 1),
+              .SPLMM(MXU_SPL != 0 && WG > 1), .CHILV(CH_ILV),
               .LDP(S > 1 ? 2 + 2 * XRS : 2),  // LOAD to a slice's busy and back
               // each slice on its NCH channels' 2^CH_LOG2 bytes each (otpu_native_dram)
               .S(S), .TMEM_WORDS(TMEM_WORDS), .IMEM_WORDS(IMEM_WORDS), .ACT_BLOCKS(ACT_BLOCKS),
@@ -481,7 +485,7 @@ module otpu_board #(
                .MXU_CL(MXU_CL), .MXU_E(MXU_E), .MXU_QD(MXU_QD), .QUANT_R1(QUANT_R1), .QUANT_PW(QUANT_PW), .QUANT_SPLIT(QUANT_SPLIT), .QUANT_HL(QUANT_HL), .QUANT_SWW(QUANT_SWW), .QUANT_QSTB(QUANT_QSTB), .QUANT_QSTHL(QUANT_QSTHL), .QONCE(QONCE), .VPU_CL(VPU_CL), .ULANES(ULANES), .PQ_WIN(PQ_WIN),
                .SEQ_WC(SEQ_WC), .HAS_DSTEP(DSTEP), .TMEM_IMPL(TMEM_IMPL), .TMEM_RQ(TMEM_RQ),
                .TMEM_NSB(TMEM_NSB), .TMEM_SBP(TMEM_SBP), .TMEM_SBH(TMEM_SBH), .TMEM_RPL(TMEM_RPL), .TMEM_TDP(TMEM_TDP),
-               .TMEM_GST(TMEM_GST), .TMEM_PMP(TMEM_PMP), .TMEM_PRK(TMEM_PRK), .TMEM_SDM(TMEM_SDM),
+               .TMEM_GST(TMEM_GST), .TMEM_PMP(TMEM_PMP), .TMEM_PRK(TMEM_PRK), .TMEM_SDM(TMEM_SDM), .TMEM_RQL(TMEM_RQL), .COLL_GATHER(COLL_GATHER),
                .TMEM_STYLE(TMEM_STYLE), .IMEM_STYLE(IMEM_STYLE), .ACT_UCOLS(ACT_UCOLS), .NCH(NCH), .CB(CB), .QB(QB),
                .MXU_RF_STYLE(MXU_RF_STYLE), .MXU_FIFO_STYLE(MXU_FIFO_STYLE), .MXU_WASK(MXU_WASK),
                .MXU_RF_ROWS(MXU_RF_ROWS), .MXU_BRAW(MXU_BRAW), .MXU_AASK(MXU_AASK),
@@ -649,7 +653,7 @@ module otpu_board #(
                  .ULANES(ULANES), .PQ_WIN(PQ_WIN), .SEQ_WC(SEQ_WC), .HAS_DSTEP(DSTEP),
                  .TMEM_IMPL(TMEM_IMPL), .TMEM_RQ(TMEM_RQ),
                  .TMEM_NSB(TMEM_NSB), .TMEM_SBP(TMEM_SBP), .TMEM_SBH(TMEM_SBH), .TMEM_RPL(TMEM_RPL), .TMEM_TDP(TMEM_TDP),
-                 .TMEM_GST(TMEM_GST), .TMEM_PMP(TMEM_PMP), .TMEM_PRK(TMEM_PRK), .TMEM_SDM(TMEM_SDM),
+                 .TMEM_GST(TMEM_GST), .TMEM_PMP(TMEM_PMP), .TMEM_PRK(TMEM_PRK), .TMEM_SDM(TMEM_SDM), .TMEM_RQL(TMEM_RQL), .COLL_GATHER(COLL_GATHER),
                  .TMEM_STYLE(TMEM_STYLE), .IMEM_STYLE(IMEM_STYLE), .ACT_UCOLS(ACT_UCOLS), .NCH(NCH), .CB(CB), .QB(QB),
                  .MXU_RF_STYLE(MXU_RF_STYLE), .MXU_FIFO_STYLE(MXU_FIFO_STYLE), .MXU_WASK(MXU_WASK),
                  .MXU_RF_ROWS(MXU_RF_ROWS), .MXU_BRAW(MXU_BRAW), .MXU_AASK(MXU_AASK),

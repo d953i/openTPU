@@ -75,7 +75,7 @@ UARCH_OPT = ("MXU_E", "QUANT_R1", "QUANT_PW", "SE_R", "MXU_QD", "MXU_RF_ROWS", "
 # with TMEM_IMPL 3 the one copy's knobs (otpu_slice TMEM_<K>, docs/tmem_nocopy.md;
 # vivado/tmem_knobs.tcl's TMEM_X)
 TMEM3_KEYS = ("TMEM_NSB", "TMEM_SBP", "TMEM_SBH", "TMEM_RPL", "TMEM_TDP", "TMEM_GST", "TMEM_PMP",
-              "TMEM_PRK", "TMEM_SDM")
+              "TMEM_PRK", "TMEM_SDM", "TMEM_RQL")
 # and otpu_native_dram's per-channel depths in beats (otpu_board / otpu_top NAT_*: RD, AD, XD, WQD,
 # APF; absent: the adapter's defaults, the cards'): B's, A's and W's reads in flight, the SW queue,
 # A's read runs; NAT_FILL (SW_FILL: a partial SW beat read and written whole, 1, or written with
@@ -172,7 +172,13 @@ BOARDS = {"ypcb-00338": ["boards/ypcb-00338/otpu_native_sys.sv",
                          "boards/bcu1525/otpu_bmc_watch.sv", "boards/bcu1525/otpu_bmc_uart.sv",
                          "boards/bcu1525/otpu_bcu_gov.sv", "boards/bcu1525/otpu_axil_off.sv",
                          "boards/bcu1525/otpu_axi_off.sv",
-                         "boards/bcu1525/otpu_fpga_top_bcu_wg.sv"]}
+                         "boards/bcu1525/otpu_fpga_top_bcu_wg.sv"],
+          # the SQRL Forest Kitten boards, FK33 and FK35 (boards/sqrl-fk): the channel bridges and
+          # register slices on the HBM's AXI ports
+          "sqrl-fk": ["mem/otpu_hbm_ch.sv", "mem/otpu_axi_rs.sv",
+                      "boards/sqrl-fk/otpu_sqrl_fk_sys.sv", "boards/sqrl-fk/otpu_hbm.sv",
+                      "boards/sqrl-fk/otpu_axi3_hmux.sv",
+                      "boards/sqrl-fk/otpu_fpga_top_sqrl_fk.sv"]}
 
 
 class TargetError(ValueError):

@@ -80,11 +80,12 @@ source "$files/relink.sh"
 
 # ---------------------------------------------------------------- probes (no side effects)
 
-cards() {  # the openTPU cards on the bus: 10ee:7028, or any device with subsystem 10ee:4f54
-  local d
+cards() {  # the openTPU cards on the bus: 10ee:7028, any device with subsystem 10ee:4f54, or a SQRL FK (1e24:1533)
+  local d v
   for d in "$pci"/devices/*; do
-    [[ "$(cat "$d/vendor")" == 0x10ee ]] || continue
-    if [[ "$(cat "$d/device")" == 0x7028 || "$(cat "$d/subsystem_device")" == 0x4f54 ]]; then
+    v="$(cat "$d/vendor"):$(cat "$d/device")"
+    if [[ "$v" == 0x10ee:0x7028 || "$v" == 0x1e24:0x1533 ||
+          ( "$v" == 0x10ee:* && "$(cat "$d/subsystem_device")" == 0x4f54 ) ]]; then
       basename "$d"
     fi
   done
@@ -212,7 +213,7 @@ do_check() {
   bdfs="$(cards)"
   if [[ -z "$bdfs" ]]; then
     say "card"
-    bad "no openTPU card on the bus (10ee:7028): load the bitstream (JTAG, then --rescan), or flash it"
+    bad "no openTPU card on the bus (10ee:7028, 1e24:1533): load the bitstream (JTAG, then --rescan), or flash it"
   else
     for b in $bdfs; do check_card "$b"; done
   fi

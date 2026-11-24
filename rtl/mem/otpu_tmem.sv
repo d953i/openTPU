@@ -79,7 +79,9 @@ module otpu_tmem #(
   parameter int   PMP   = 0,              // TDP: 1 the RAMs pumped at 2x on clk_f (otpu_pump_bank), 2
                                           //   its model at the core clock (see IMPL 3)
   parameter bit   IQ    = 1'b0,           // the input stage: the granted writes registered (below)
-  parameter string STYLE = "block"        // the pumped RAMs' (PMP 1: otpu_pump_bank STYLE; "ultra":
+  parameter logic [NRP-1:0] QR = '0,      // IMPL 3: the ports whose data comes a cycle later, the
+                                          //   RAMs' words registered (s_qr, see g_qr below)
+  parameter STYLE = "block"        // the pumped RAMs' (PMP 1: otpu_pump_bank STYLE; "ultra":
                                           //   UltraRAM, the WG targets': its block RAM is the board's; the
                                           //   other configurations' RAMs are block RAM)
 ) (
@@ -108,6 +110,11 @@ module otpu_tmem #(
   localparam int BD = WORDS / LANES;        // words per bank
   localparam int IW = $clog2(BD);
   initial if (IMPL == 1 && WPB != 1) $fatal(1, "otpu_tmem: IMPL 1 needs WPB = 1");
+  initial if (QR != '0 && IMPL != 3) $fatal(1, "otpu_tmem: QR needs IMPL 3");
+  initial
+    for (int p = 0; p < NRP; p++)
+      if (GST && SH_MASK[p] && QR[p] != QR[SH_HOST])
+        $fatal(1, "otpu_tmem: QR %b: guest port %0d and its host %0d differ", QR, p, SH_HOST);
   initial if (IMPL == 3 && !(WPB == 1 || (WPB == 2 && PMP != 0)))
     $fatal(1, "otpu_tmem: IMPL 3 takes WPB 1, or 2 pumped (PMP 1 / 2: the odd edge's two ports)");
   initial if (TDP && IMPL != 3) $fatal(1, "otpu_tmem: TDP needs IMPL 3");
@@ -733,6 +740,19 @@ module otpu_tmem #(
       for (int p = 0; p < NRP; p++)
         for (int l = 0; l < LANES; l++) rpf[p][l] = RPL && rpvb[p][l] && rpl[p][l];
     logic [LANES-1:0][NSB-1:0][NS-1:0][31:0] s_q;
+    // QR (the slice's TMEM_RQL moved to the RAMs): the RAMs' words registered at the core edge
+    // after the read (s_qr), and a QR port's data select and its lanes' stage (g_port) driven by
+    // its controls a cycle later, so its data is the port's data of the cycle before, exactly as
+    // the slice's r_dq made it, but the register sits at the RAMs' outputs: the UltraRAMs'
+    // cascade gets its own core period (PMP 1: otpu_clk2x.tcl's two fast periods from qa / qb),
+    // and the {bank, RAM} select and the route into the unit the next (FK35 r14 at 225 MHz, the
+    // slice's register: URAM -> LUT3 -> LUT6 -> MUXF7 -> MUXF8 -> the MXU's DSP B register, -0.505 ns)
+    logic [LANES-1:0][NSB-1:0][NS-1:0][31:0] s_qr;
+    if (QR != '0) begin : g_sqr
+      always_ff @(posedge clk) s_qr <= s_q;
+    end else begin : g_nsqr
+      assign s_qr = '0;
+    end
     for (genvar b = 0; b < LANES; b++) begin : g_bank
       for (genvar k = 0; k < NSB; k++) begin : g_sub
         logic [31:0] wd, wd1;
@@ -895,11 +915,31 @@ module otpu_tmem #(
       localparam int SD = sd_of(p);
       logic [LANES-1:0][LW-1:0]  ss;
       logic [LANES-1:0]          bh, bh1;
+      // the words and the select this cycle's data takes: QR, the RAMs' registered words with the
+      // read's RAM select, its write hits and the write stage's data a cycle later (g_sqr)
+      logic [LANES-1:0][NSB-1:0][NS-1:0][31:0] sq;
+      logic [LANES-1:0][LW-1:0]         ssu;
+      logic [LANES-1:0]                 bhu, bh1u;
+      logic [LANES-1:0][WPB-1:0][31:0]  pdu;
+      if (QR[p]) begin : g_qr
+        logic [LANES-1:0][LW-1:0]         ssd;
+        logic [LANES-1:0]                 bhd, bh1d;
+        logic [LANES-1:0][WPB-1:0][31:0]  pdd;
+        always_ff @(posedge clk) begin
+          ssd <= ss;
+          bhd <= rst ? '0 : bh;
+          bh1d <= rst ? '0 : bh1;
+          pdd <= pd;
+        end
+        assign sq = s_qr, ssu = ssd, bhu = bhd, bh1u = bh1d, pdu = pdd;
+      end else begin : g_nqr
+        assign sq = s_q, ssu = ss, bhu = bh, bh1u = bh1, pdu = pd;
+      end
       for (genvar b = 0; b < LANES; b++) begin : g_pr
         for (genvar k = 0; k < NSB; k++) begin : g_k
-          assign pr[p][b * NSB + k] = s_q[b][k][SD];
+          assign pr[p][b * NSB + k] = sq[b][k][SD];
         end
-        assign pss[p][b] = PSB'(ss[b]);
+        assign pss[p][b] = PSB'(ssu[b]);
       end
 `ifdef OTPU_TMEM_ABL_DSEL
       assign pdir[p] = 1'b0;
@@ -930,10 +970,10 @@ module otpu_tmem #(
       always_comb
 `ifdef OTPU_TMEM_ABL_DSEL
         for (int b = 0; b < LANES; b++)
-          pq[p][b] = bh[b] ? pd[b][0] : s_q[b][p % NSB][SD] ^ s_q[b][(p + NSB / 2) % NSB][SD];
+          pq[p][b] = bhu[b] ? pdu[b][0] : sq[b][p % NSB][SD] ^ sq[b][(p + NSB / 2) % NSB][SD];
 `else
         for (int b = 0; b < LANES; b++)
-          pq[p][b] = bh[b] ? pd[b][0] : bh1[b] ? pd[b][WPB-1] : s_q[b][ss[b]][SD];
+          pq[p][b] = bhu[b] ? pdu[b][0] : bh1u[b] ? pdu[b][WPB-1] : sq[b][ssu[b]][SD];
 `endif
      end
     end
@@ -1083,25 +1123,41 @@ module otpu_tmem #(
       end
 `endif
     end
+    // QR: the lanes' fresh, bank and rotation a cycle later (with the words and select, g_qr), the
+    // held words loaded in step with them
+    logic [LANES-1:0]         fu;
+    logic [LANES-1:0][BW-1:0] selu, rqu;
     always_ff @(posedge clk)
       for (int l = 0; l < LANES; l++) begin
         fresh[l] <= r_en[p][l] | rpf[p][l];   // (rpf: IMPL 3 RPL's replays)
         if (GEN_R[p] && r_en[p][l]) sel[l] <= r_addr[p][l][BW-1:0];
-        if (fresh[l]) held[l] <= lq[l];
+        if (fu[l]) held[l] <= lq[l];
       end
+    if (QR[p]) begin : g_qd
+      logic [LANES-1:0]         fd;
+      logic [LANES-1:0][BW-1:0] sd, rd;
+      always_ff @(posedge clk) begin
+        fd <= fresh;
+        sd <= sel;
+        rd <= rq;
+      end
+      assign fu = fd, selu = sd, rqu = rd;
+    end else begin : g_nqd
+      assign fu = fresh, selu = sel, rqu = rq;
+    end
     logic [LANES-1:0][BW-1:0] bk;          // the lane's bank
     always_comb
       for (int l = 0; l < LANES; l++) begin
-        bk[l] = GEN_R[p] ? sel[l] : BW'((l + int'(rq[l])) % LANES);
+        bk[l] = GEN_R[p] ? selu[l] : BW'((l + int'(rqu[l])) % LANES);
         // pdir: the word by {bank, the bank's RAM}, both from flip-flops (pq's select in the index)
         lq[l] = pdir[p] ? pr[p][int'(bk[l]) * NSB + int'(pss[p][bk[l]])] : qb[bk[l]];
-        r_data[p][l] = fresh[l] ? lq[l] : held[l];
+        r_data[p][l] = fu[l] ? lq[l] : held[l];
       end
 `ifndef SYNTHESIS
     // the select by {bank, RAM} is the bank's word (pq), lane by lane
     always @(posedge clk)
       for (int l = 0; l < LANES; l++)
-        if (chk && pdir[p] && fresh[l] && lq[l] !== qb[bk[l]])
+        if (chk && pdir[p] && fu[l] && lq[l] !== qb[bk[l]])
           $fatal(1, "TMEM%0d: port %0d lane %0d's word %h is not bank %0d's %h", SID, p, l, lq[l],
                  bk[l], qb[bk[l]]);
 `endif
@@ -1175,7 +1231,7 @@ endmodule
 module otpu_pump_bank #(
   parameter int    N     = 8192,
   parameter int    W     = 32,       // the word's bits (otpu_tmem: a slice of the 32, one RAM)
-  parameter string STYLE = "block",
+  parameter STYLE = "block",
   parameter bit    FW    = 1'b1,     // the phase from a fast-domain register (below)
   parameter bit    W2    = 1'b0      // a second write (wv2), port B's at the odd edges
 ) (

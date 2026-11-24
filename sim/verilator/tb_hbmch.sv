@@ -48,6 +48,9 @@
 // a low half with no high half the next cycle, or a beat across the end of a reset, is a failure.
 // WHB (with WPOST): the master posts a beat's low half on n_wfree as at WHB 0 and its high half the
 // next cycle, the other bits random; a reset between them drops the beat.
+// NP 2 (otpu_hbm_ch NP: two ports in lockstep, CB 128): two models, one a port (PC 6 and 7 at 256 MiB,
+// the channel's halves), each with its own random timing; posted beats as 2 writes of 512 bits;
+// the landed count the smaller of the two ports' (each lands 2 AXI beats a native beat).
 module tb_hbmch #(
   parameter int CB = 128,
   parameter int ARD = 64,
@@ -62,11 +65,15 @@ module tb_hbmch #(
   parameter int XSW = 9,
   parameter bit RHB = 1'b0,
   parameter bit WHB = 1'b0,
-  parameter bit CPY = 1'b0                     // the bridge's aclk fan-outs in copies (otpu_hbm_ch CPY)
+  parameter bit CPY = 1'b0,                    // the bridge's aclk fan-outs in copies (otpu_hbm_ch CPY)
+  parameter int NP = 1,                        // the bridge's memory ports (otpu_hbm_ch NP)
+  parameter int RDD = 512,                     // NP 2: the pair's R deskew FIFOs (otpu_hbm_ch RDD)
+  parameter int RCD = 64                       // the bridge's reads in flight (otpu_hbm_ch RCD)
 );
   initial if (WHB && !WPOST) $fatal(1, "tb_hbmch: WHB needs WPOST");
   localparam int CAW = 34 - 5 - $clog2(CB);
   localparam int K = CB / 32;
+  localparam int KQ = K / NP;                  // a posted beat's writes
   int cp = 3750, ap = 1111;
   logic clk = 1'b0, aclk = 1'b0;
   initial begin
@@ -114,26 +121,31 @@ module tb_hbmch #(
   logic [XSW-1:0] ncslot;
   logic [4:0][XSW-1:0] pslot;                   // (otpu_hbm_ch's copies)
   logic pwe;
-  logic [1:0][K-1:0] pq;
-  logic [255:0] pd;
+  logic [1:0][KQ-1:0] pq;
+  logic [256*NP-1:0] pd;
   logic [XSW+1:0] pcntg;
   logic [CB*8-1:0] nwd, nrd;
   logic [CB-1:0] nwm;
   logic [15:0] nwdone;
   logic [$clog2(WDD):0] nwfree;
-  logic awv, awr, wv, wr, wl, bv, br, arv, arr, rv, rr, rl;
-  logic [33:0] awa, ara;
-  logic [3:0] awl, arl;
-  logic [255:0] wd, rd;
-  logic [31:0] ws;
-  logic [1:0] bre, rre;
+  logic [NP-1:0] awv, awr, wv, wr, wl, bv, br, arv, arr, rv, rr, rl;
+  logic [NP-1:0][33:0] awa, ara;
+  logic [NP-1:0][3:0] awl, arl;
+  logic [NP-1:0][255:0] wd, rd;
+  logic [NP-1:0][31:0] ws;
+  logic [NP-1:0][1:0] bre, rre;
   logic [3:0] ev;
-  logic [$clog2(16 / K):0] ev_n;
-  longint wap, wap_q = 0, wap_all = 0;      // the model's landed beats, and summed over its resets
-  int     merr;
+  logic [$clog2(16 * NP / K):0] ev_n;
+  longint wap [NP], wap_q [NP], wap_p [NP], wap_all = 0;   // the models' landed beats, summed over their resets
+  int     merr_p [NP], merr;
+  initial for (int l = 0; l < NP; l++) begin wap_q[l] = 0; wap_p[l] = 0; end
+  always_comb begin
+    merr = 0;
+    for (int l = 0; l < NP; l++) merr += merr_p[l];
+  end
   logic   done, bad;
 
-  tb_hbmch_nat #(.CB(CB), .CAW(CAW), .POST(WPOST), .XSW(XSW), .RHB(RHB), .WHB(WHB)) u_acc (
+  tb_hbmch_nat #(.CB(CB), .CAW(CAW), .POST(WPOST), .XSW(XSW), .RHB(RHB), .WHB(WHB), .NP(NP)) u_acc (
     .clk, .rst, .n_cvalid(ncv), .n_cready(ncr), .n_cwe(ncwe), .n_caddr(nca), .n_csrc(ncsrc),
     .n_cslot(ncslot), .n_wvalid(nwv), .n_wready(nwr), .n_wfree(8'(nwfree)), .n_wdata(nwd), .n_wmask(nwm),
     .n_rvalid(nrv), .n_rdata(nrd), .n_wdone(nwdone), .aclk, .p_we(pwe), .p_q(pq), .p_slot(pslot),
@@ -141,7 +153,7 @@ module tb_hbmch #(
 
   otpu_hbm_ch #(.CB(CB), .CAW(CAW), .PC(5'd3), .ARD(ARD), .WOT(WOT), .NBK(NBK), .WDD(WDD),
                 .WPOST(WPOST), .N(N), .WH(WH), .PST(PST), .AWD(AWD), .XSW(XSW), .RHB(RHB), .WHB(WHB),
-                .CPY(CPY)) u_ch (
+                .CPY(CPY), .NP(NP), .RDD(RDD), .RCD(RCD)) u_ch (
     .clk, .rst, .n_cvalid(ncv), .n_cready(ncr), .n_cwe(ncwe), .n_caddr(nca), .n_csrc(ncsrc),
     .n_cslot(ncslot), .n_wvalid(nwv), .n_wready(nwr), .n_wfree(nwfree), .n_wdata(nwd), .n_wmask(nwm),
     .n_rvalid(nrv), .n_rdata(nrd), .n_wdone(nwdone), .n_err(nerr),
@@ -152,17 +164,27 @@ module tb_hbmch #(
     .m_arvalid(arv), .m_arready(arr), .m_araddr(ara), .m_arlen(arl),
     .m_rvalid(rv), .m_rready(rr), .m_rdata(rd), .m_rresp(rre), .m_rlast(rl), .ev, .ev_n);
 
-  otpu_hbm_model #(.BEATS(1 << 16), .PC(5'd3)) u_mem (
-    .clk(aclk), .rst(arst), .dump(1'b0),
-    .awvalid(awv), .awready(awr), .awid(6'd0), .awaddr(awa), .awlen(awl),
-    .wvalid(wv), .wready(wr), .wdata(wd), .wstrb(ws), .wlast(wl),
-    .bvalid(bv), .bready(br), .bid(), .bresp(bre),
-    .arvalid(arv), .arready(arr), .arid(6'd0), .araddr(ara), .arlen(arl),
-    .rvalid(rv), .rready(rr), .rid(), .rdata(rd), .rresp(rre), .rlast(rl), .wap, .nerr(merr));
+  // the models: port l's at PC 3 x NP + l of 2^(29 - log2 NP) bytes (NP 2: the channel's halves)
+  for (genvar l = 0; l < NP; l++) begin : g_mem
+    otpu_hbm_model #(.BEATS(1 << 16), .PC(5'(3 * NP + l)), .PCL(NP == 2 ? 28 : 29)) u_mem (
+      .clk(aclk), .rst(arst), .dump(1'b0),
+      .awvalid(awv[l]), .awready(awr[l]), .awid(6'd0), .awaddr(awa[l]), .awlen(awl[l]),
+      .wvalid(wv[l]), .wready(wr[l]), .wdata(wd[l]), .wstrb(ws[l]), .wlast(wl[l]),
+      .bvalid(bv[l]), .bready(br[l]), .bid(), .bresp(bre[l]),
+      .arvalid(arv[l]), .arready(arr[l]), .arid(6'd0), .araddr(ara[l]), .arlen(arl[l]),
+      .rvalid(rv[l]), .rready(rr[l]), .rid(), .rdata(rd[l]), .rresp(rre[l]), .rlast(rl[l]),
+      .wap(wap[l]), .nerr(merr_p[l]));
+  end
 
   always @(posedge aclk) begin
-    wap_all += (wap >= wap_q) ? wap - wap_q : wap;
-    wap_q = wap;
+    longint m;
+    for (int l = 0; l < NP; l++) begin
+      wap_p[l] += (wap[l] >= wap_q[l]) ? wap[l] - wap_q[l] : wap[l];
+      wap_q[l] = wap[l];
+    end
+    m = wap_p[0];
+    for (int l = 1; l < NP; l++) if (wap_p[l] < m) m = wap_p[l];
+    wap_all = m * NP;
   end
 
   // the bridge's issue counts (ev): bursts and their native beats, hazard and credit cycles
@@ -198,7 +220,7 @@ module tb_hbmch #(
         pcg_err++;
       end else pc_pend--;
     end
-    if (pwe && pq[0][K-1]) pc_pend++;
+    if (pwe && pq[0][KQ-1]) pc_pend++;
     pcg_q <= pcntg;
   end
 
@@ -230,7 +252,8 @@ module tb_hbmch_nat #(
   parameter bit POST = 1'b0,                   // write data posted on n_wfree (tb_hbmch WPOST)
   parameter int XSW = 9,                       // a posted read's lane RAM entry's bits
   parameter bit RHB = 1'b0,                    // read data in half beats (tb_hbmch RHB)
-  parameter bit WHB = 1'b0                     // posted write data in half beats (tb_hbmch WHB)
+  parameter bit WHB = 1'b0,                    // posted write data in half beats (tb_hbmch WHB)
+  parameter int NP = 1                         // the bridge's ports: posted beats in K / NP writes
 ) (
   input  logic            clk,
   input  logic            rst,
@@ -250,9 +273,9 @@ module tb_hbmch_nat #(
   input  logic [15:0]     n_wdone,
   input  logic            aclk,                // posted reads' beats (otpu_hbm_ch p_*)
   input  logic            p_we,
-  input  logic [1:0][CB/32-1:0] p_q,         // one-hot with p_we, else 0; two copies
+  input  logic [1:0][CB/(32*NP)-1:0] p_q,    // one-hot with p_we, else 0; two copies
   input  logic [4:0][XSW-1:0] p_slot,            // five copies
-  input  logic [255:0]    p_d,
+  input  logic [256*NP-1:0] p_d,
   input  logic [XSW+1:0]  p_cntg,
   input  logic            crst,                // the bridge's core side in reset
   input  longint          wap,                 // the model's W beats landed
@@ -351,7 +374,7 @@ module tb_hbmch_nat #(
     if (p_q[1] != p_q[0] || p_slot != {5{p_slot[0]}})
       $fatal(1, "tb_hbmch: p_q / p_slot's copies differ (%h, %h)", p_q, p_slot);
     if (p_we) begin
-      lram[p_slot[0]][256 * $clog2(p_q[0]) +: 256] <= p_d;
+      lram[p_slot[0]][256 * NP * $clog2(p_q[0]) +: 256 * NP] <= p_d;
       lqn[p_slot[0]] <= lqn[p_slot[0]] + 1;
     end
   end
@@ -444,7 +467,7 @@ module tb_hbmch_nat #(
             if (nerr < 20) $display("ERROR %s: p_cnt steps with no posted read given", NAME);
             nerr++;
           end else begin
-            if (lqn[pq[0].slot] - pq[0].q0 != longint'(K)) begin
+            if (lqn[pq[0].slot] - pq[0].q0 != longint'(K / NP)) begin
               if (nerr < 20)
                 $display("ERROR %s: posted beat %0d (entry %0d) counted with %0d quarters written", NAME,
                          pq[0].b, pq[0].slot, lqn[pq[0].slot] - pq[0].q0);

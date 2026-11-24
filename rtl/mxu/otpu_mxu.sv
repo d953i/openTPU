@@ -121,18 +121,22 @@ module otpu_mxu
   parameter int WG    = 1,       // weight rows a group: 1, or MCOLS = 8 (port W's P = WG x D bytes)
   parameter int AB    = 32,      // port A's read bytes: 32 (a line), at WG > 1 128 (a channel beat)
   parameter bit XPOST = 1'b0,    // WG > 1: port W's beats posted into the chunk FIFO (see the top)
-  parameter int QB    = 0,       // XPOST: 2^QB writes a beat (0, or the bridges' aclk quarters: 2)
+  parameter int QB    = 0,       // XPOST: 2^QB writes a beat (0; the bridges' aclk quarters, 2, or
+                                 //   halves, 1: otpu_hbm_ch NP 2)
   parameter bit CHASH = 1'b0,    // the channels' hash (otpu_native_dram; unused here: every chunk
                                  //   is a group's, its lanes in the hash's order)
   parameter bit TQ    = 1'b0,    // reads not granted (TMEM replays them), writes through a queue,
                                  //   the epilogue's advance from flip-flops (the slice: TMEM_IMPL 3 RPL)
-  parameter string RF_STYLE = "block", // the result FIFO's copies: "block" (read ahead) or
+  parameter bit RQL   = 1'b0,    // t_rdata through the slice's register (otpu_slice TMEM_RQL): TQ's
+                                 //   advance waits out the cycle after a new read or a replay (rql_h);
+                                 //   TQ 0: the slice withholds the grant then
+  parameter RF_STYLE = "block", // the result FIFO's copies: "block" (read ahead) or
                                  //   "distributed" (LUT RAM; the WG targets', its LUTs before its block RAM)
   parameter int RF_ROWS = 0,     // the result FIFO's rows (0: 32 or 64, the rows in flight of
                                  //   one-advance rows; 32: one-advance rows at 32 / (LROW + 7))
   parameter bit BRAW  = 1'b1,    // WG > 1: the column ends' B from the scale entry's raw bytes
                                  //   skewed to them (g_col_end g_br; 0: B skewed, g_bs)
-  parameter string FIFO_STYLE = "block", // the chunk FIFO's lanes: "block", or "ultra" (UltraRAM
+  parameter FIFO_STYLE = "block", // the chunk FIFO's lanes: "block", or "ultra" (UltraRAM
                                  //   in 72-bit columns; XPOST: the beats staged across, g_xp)
   parameter bit IQ    = 1'b0,    // the accept decoupled from the issuer: an accepted command's
                                  //   issue waits in a queue of QD (iq) for the issuer, which no
@@ -277,10 +281,20 @@ module otpu_mxu
   // a chain's sum: 24 bits, or (WG > 1: the packed PE) 32
   localparam int PRW = (WG > 1) ? 32 : 24;
   initial if (IMPL != 2) $fatal(1, "otpu_mxu: IMPL 2 (systolic) is the only dot product");
-  initial if (WG != 1 && (WG != MCOLS || WG != 8))
-    $fatal(1, "otpu_mxu: WG 1, or WG = MCOLS = 8 (WG %0d, MCOLS %0d)", WG, MCOLS);
-  initial if (XPOST && (WG == 1 || (QB != 0 && QB != 2)))
-    $fatal(1, "otpu_mxu: XPOST needs WG > 1, and QB 0 or 2 (QB %0d)", QB);
+  initial if (WG != 1 && (WG != MCOLS || !(WG == 8 || WG == 16)))
+    $fatal(1, "otpu_mxu: WG 1, or WG = MCOLS = 8 or 16 (WG %0d, MCOLS %0d)", WG, MCOLS);
+  // GRP's group (docs/isa.md "Weight groups"): R = WG rows (int8) or 2 WG (4-bit); its Sw words
+  // R, padded to SWP = 4R (8R NVFP4) bytes, then a chunk's block data E = R x sb bytes (int8 1,
+  // int4x / fp4x6 4, NVFP4 8): at WG 8 32 / 64 / 128 bytes of Sw and 8 / 64 / 128 of entry, at
+  // WG 16 64 / 128 / 256 and 16 / 128 / 256. A port A beat (AB 128) carries one chunk's entry: so
+  // NVFP4 at WG 16 (256 bytes a chunk) is not built (a $fatal at its MM). GSL: the group's Sw
+  // lines kept (the 4-bit group's, the most: 2 WG words of 32 bits)
+  localparam int GSL = (WG > 1) ? WG / 4 : 1;
+  initial if (XPOST && (WG == 1 || QB < 0 || QB > 2))
+    $fatal(1, "otpu_mxu: XPOST needs WG > 1, and QB 0 .. 2 (QB %0d)", QB);
+  // XPOST, QB > 0: a write's quarters (QPW), quarter q's RAM written by p_q's bit q / QPW with
+  // p_d's quarter q % QPW
+  localparam int QPW = QB > 0 ? 4 >> QB : 4;
   initial if (AB != ((WG > 1) ? 128 : 32))
     $fatal(1, "otpu_mxu: port A reads AB = 32 bytes at WG 1, 128 above (AB %0d)", AB);
   initial if (D % 16 != 0 || (D / 8) % CLS != 0 || CPG > 2)
@@ -812,8 +826,9 @@ module otpu_mxu
     logic [1:0] lx;            // (AB > 32) the request's line in the beat
     logic [1:0] sl;            // (AB > 32) the Sw line's (swe: GRP's Sw line, RSC's entry)
     logic [3:0] wq;            // GRP (WG > 1): a group's beat (swr: its Sw lines; ent: the entry's
-                               //   quarters wq, the beat's lines lx + q: int8 quarter 0 (8 bytes
-                               //   of line lx), int4x / fp4x6 0 and 1, NVFP4 all four)
+                               //   quarters wq, the beat's lines lx + q: int8 quarter 0 (WG bytes
+                               //   of line lx), int4x / fp4x6 0 and 1 (WG 16: all four), NVFP4 all
+                               //   four)
   } atag_t;
   atag_t a_tag;
   always_comb begin
@@ -836,10 +851,11 @@ module otpu_mxu
       a_tag.swr = i_klast && !i_l1 && i_swn;
     end
     // GRP: each step a beat with the chunk's entries (a block's: int8 8 bytes of a line, int4x /
-    // fp4x6 two lines, NVFP4 four), which it completes; the group's Sw lines come with its first
-    // step's beat (swe, lines sl, sl + 1) or before it in a request of their own (i_sws)
+    // fp4x6 two lines, NVFP4 four; at WG 16 int8 16 bytes, int4x / fp4x6 four lines), which it
+    // completes; the group's Sw lines come with its first step's beat (swe, lines sl .. sl + GSL -
+    // 1) or before it in a request of their own (i_sws)
     if (GA) begin
-      a_tag.wq = !i_w4 ? 4'b0001 : i_nv ? 4'b1111 : 4'b0011;
+      a_tag.wq = !i_w4 ? 4'b0001 : (i_nv || WG == 16) ? 4'b1111 : 4'b0011;
       if (!i_sws && !i_rsc) begin
         a_tag.cpl = end_c || i_klast;
         a_tag.swe = (i_k == 0) && i_swh;
@@ -1003,39 +1019,49 @@ module otpu_mxu
     .clk, .we(r_we0), .wa(s_tail), .wd(r_wd0), .re(1'b1), .ra(s_rd), .rd(sr0));
   otpu_ram_1r1w #(.W(64), .N(DEPTH), .STYLE("block")) u_fs1 (
     .clk, .we(r_we1), .wa(s_tail), .wd(r_wd1), .re(1'b1), .ra(s_rd), .rd(sr1));
-  // GRP's entries (WG > 1), in the same slots: per chunk the group's Sw words (rows 0..7 and
-  // 8..15: the Sw lines sl and sl + 1 of the beat that brought them, held in r_swv; RSC: the
-  // entry's own beat) and the block's quarter lines, the beat's lines lx .. lx + 3 (int8:
-  // quarter 0's low 8 bytes). An entry and a group's Sw words are aligned to their size (ssa
-  // and srs are multiples of SWP, docs/isa.md "Weight groups"; AB 128): 4-bit's two lines at lx
-  // 0 or 2, NVFP4's four at 0, the Sw lines at sl 0 or 2 (int8's one line, sl, anywhere), so
-  // the lines past the first need no rotation of the beat
-  logic [511:0]      gsw0;                  // the S0 entry's
+  // GRP's entries (WG > 1), in the same slots: per chunk the group's Sw words (rows 0..R-1: the
+  // GSL Sw lines sl | i of the beat that brought them, held in r_swv; RSC: the entry's own beat)
+  // and the block's quarter lines, the beat's lines lx .. lx + 3 (int8: quarter 0's low WG
+  // bytes). An entry and a group's Sw words are aligned to their size (ssa and srs are multiples
+  // of SWP, docs/isa.md "Weight groups"; AB 128): at WG 8 4-bit's two lines at lx 0 or 2,
+  // NVFP4's four at 0, the Sw lines at sl 0 or 2 (int8's one line, sl, anywhere); at WG 16
+  // 4-bit's four lines at 0, its Sw lines at 0, int8's two Sw lines at sl 0 or 2; so the lines
+  // past the first need no rotation of the beat (sl | i: a line past the group's Sw is a copy,
+  // never read)
+  logic [64*WG-1:0]  gsw0;                  // the S0 entry's (the 4-bit group's 2 WG words)
   logic [3:0][255:0] gq0;
   if (WG > 1) begin : g_gsc
-    logic [511:0] r_swv;
+    logic [64*WG-1:0] r_swv;
     logic [3:0][255:0] gl;
     wire gwe = rv1 && tg1.ent;
-    // the Sw lines of an entry that brings them (swe: lines sl, sl + 1 of its beat; a Sw
-    // request's are its beat's too), kept for the group's later entries
-    wire [511:0] swl = {aline(gb1, tg1.sl | 2'd1), aline(gb1, tg1.sl)};
+    // the Sw lines of an entry that brings them (swe: lines sl | i of its beat; a Sw request's
+    // are its beat's too), kept for the group's later entries
+    logic [GSL-1:0][255:0] swl;
+    always_comb
+      for (int i = 0; i < GSL; i++) swl[i] = aline(gb1, tg1.sl | 2'(i));
     always_ff @(posedge clk)
       if (rv1 && (tg1.swr || (tg1.ent && tg1.swe))) r_swv <= swl;
     always_comb begin
-      gl[0] = (tg1.wf == WF_W8) ? {192'd0, ln1[64 * tg1.doff[4:3] +: 64]} : ln1;
+      gl[0] = (tg1.wf == WF_W8) ? 256'(ln1[8 * WG * (32'(tg1.doff) / WG) +: 8 * WG]) : ln1;
       gl[1] = gb1[256 * (32'(tg1.lx) | 1) +: 256];
       gl[2] = gb1[512 +: 256];
       gl[3] = gb1[768 +: 256];
     end
 `ifndef SYNTHESIS
     always @(posedge clk)
-      if (!rst && rv1 && tg1.wf != WF_W8 &&
-          ((tg1.ent && !tg1.rsc && (tg1.lx & ((tg1.wf == WF_NV) ? 2'd3 : 2'd1)) != 2'd0) ||
-           ((tg1.swr || (tg1.ent && tg1.swe)) && tg1.sl[0])))
+      if (!rst && rv1 && (tg1.wf != WF_W8 || WG == 16) &&
+          ((tg1.ent && !tg1.rsc && tg1.wf != WF_W8 &&
+            (tg1.lx & ((tg1.wf == WF_NV || WG == 16) ? 2'd3 : 2'd1)) != 2'd0) ||
+           ((tg1.swr || (tg1.ent && tg1.swe)) &&
+            (tg1.sl & ((tg1.wf != WF_W8 && WG == 16) ? 2'd3 : 2'd1)) != 2'd0)))
         $fatal(1, "otpu_mxu: a group's scale lines off their size's alignment (lx %0d, sl %0d)",
                tg1.lx, tg1.sl);
+    // NVFP4 groups at WG 16: a chunk's entry is 256 bytes, two port A beats (not built)
+    always @(posedge clk)
+      if (!rst && rv1 && WG == 16 && tg1.wf == WF_NV)
+        $fatal(1, "otpu_mxu: NVFP4 groups at WG 16 are not built (a chunk's entry is two beats)");
 `endif
-    otpu_ram_1r1w #(.W(512), .N(DEPTH), .STYLE("block")) u_gsw (
+    otpu_ram_1r1w #(.W(64 * WG), .N(DEPTH), .STYLE("block")) u_gsw (
       .clk, .we(gwe), .wa(s_tail), .wd(tg1.swe ? swl : r_swv), .re(1'b1), .ra(s_rd), .rd(gsw0));
     for (genvar q = 0; q < 4; q++) begin : g_q
       otpu_ram_1r1w #(.W(256), .N(DEPTH), .STYLE("block")) u_gq (
@@ -1307,8 +1333,11 @@ module otpu_mxu
       // turn: entry cs from staging entry cs mod NS (tk), its read registered (sd), then written
       // at s1 (v1), counted in lu. It takes one a cycle and a channel brings one every 4 aclk
       // cycles at the most (QB 2; QB 0, the simulation's, one a clk cycle), so NS covers p_cnt's
-      // crossing; the simulation checks no post overruns the copy.
-      localparam int NS = 32;
+      // crossing; the simulation checks no post overruns the copy. QB 1 (a channel on two HBM
+      // ports, otpu_hbm_ch NP 2): one every 2 aclk cycles, faster than the copy in a burst of
+      // reads after an HBM stall (a bridge's 64 reads in flight at 225 M beats/s against 150: ~21
+      // ahead, and the crossing's), so 64 entries.
+      localparam int NS = QB == 1 ? 64 : 32;
       localparam int NW = $clog2(NS);
       logic [MCOLS-1:0][PW+1:0] cc, lu;                // beats taken from staging, landed
       (* keep *) logic [MCOLS-1:0][3:0][PW-1:0] cs;    // the next entry (a copy a quarter RAM)
@@ -1340,9 +1369,9 @@ module otpu_mxu
           if (QB == 0) begin : g_b
             assign swd[q] = p_d[c][QW*q +: QW];
           end else begin : g_q
-            assign swd[q] = p_d[c][QW-1:0];
+            assign swd[q] = p_d[c][QW*(q % QPW) +: QW];
           end
-          assign swe[q] = (QB == 0) ? p_we[c] : p_q[c][0][(QB > 0) ? q : 0];
+          assign swe[q] = (QB == 0) ? p_we[c] : p_q[c][0][(QB > 0) ? q / QPW : 0];
           assign swa[q] = p_slot[c][q][NW-1:0];
           assign sra[q] = cs[c][q][NW-1:0];
         end
@@ -1454,14 +1483,14 @@ module otpu_mxu
           if (QB == 0) begin : g_b
             assign wd = p_d[c][QW*g +: QW];
           end else begin : g_q
-            assign wd = p_d[c][QW-1:0];
+            assign wd = p_d[c][QW*(g % QPW) +: QW];
           end
-          assign rbe[g] = QB == 0 || p_q[c][1][(QB > 0) ? g : 0];
+          assign rbe[g] = QB == 0 || p_q[c][1][(QB > 0) ? g / QPW : 0];
           assign rwd[9*g +: 9] = 9'(wd[QW-1 -: RB]);
           assign wl[c][QW*g + QW - RB +: RB] = rrd[9*g +: RB];
           (* keep_hierarchy = "yes" *)
           otpu_ram_1r1w_2c #(.W(QW - RB), .N(DEPTH), .STYLE("block")) u_fd (
-            .wclk(p_clk), .we((QB == 0) ? p_we[c] : p_q[c][0][(QB > 0) ? g : 0]),
+            .wclk(p_clk), .we((QB == 0) ? p_we[c] : p_q[c][0][(QB > 0) ? g / QPW : 0]),
             .wa(p_slot[c][g]), .wd(wd[QW-RB-1:0]),
             .rclk(clk), .re(1'b1), .ra((c == 0) ? f_rdl[g] : rdl[(c == 0) ? 1 : c][g]),
             .rd(wl[c][QW*g +: QW - RB]));
@@ -1622,7 +1651,7 @@ module otpu_mxu
     int r;
     r = 2 * j + t;
     if (wf == WF_W8) return {56'd0, q[0][8*j +: 8]};
-    if (wf == WF_NV) return q[r / 4][64*(r % 4) +: 64];
+    if (wf == WF_NV) return q[(r / 4) % 4][64*(r % 4) +: 64];   // (% 4: at WG 16, no NVFP4, in range)
     return {32'd0, q[r / 8][32*(r % 8) +: 32]};
   endfunction
   bdec_t dcol1 [MCOLS], dcol1b [MCOLS];
@@ -1708,7 +1737,7 @@ module otpu_mxu
     for (int j = 0; j < MCOLS; j++) begin
       sap1[j] <= GA ? (cu0 ? F_ONE : gsw0[32*j +: 32])
                                   : fp_pow2m(asc0[j*64 +: 32], wk);
-      sap1b[j] <= cu0 ? F_ONE : gsw0[256 + 32*j +: 32];
+      sap1b[j] <= cu0 ? F_ONE : gsw0[32 * (WG > 1 ? WG : 8) + 32*j +: 32];   // (4-bit: rows WG..2 WG-1)
     end
   end
 `ifndef SYNTHESIS
@@ -2712,7 +2741,24 @@ module otpu_mxu
     (* max_fanout = 64 *) logic room_q, tq_z, lost_q;
     logic       rq_any;                          // a read in the request register (|rq_en)
     logic [LANES-1:0] t_ren_q;                   // the read TMEM sees: rq_en while room_q, tq_z
-    (* max_fanout = 128 *) wire ea_t = room_q && !lost_q && (tq_z || !rq_any);
+    // RQL: t_rdata is TMEM's data a cycle late, so it equals TMEM's except in the cycle after its
+    // data changed: after a new read (one whose request was not read the cycle before without an
+    // advance: a held request is read again every cycle, the same word, its writes having all
+    // landed before it reads) or a replay (lost_q). rql_h holds the advance then; the epilogue
+    // takes its data only at advances, so it takes TMEM's own, a read's word at most every other
+    // cycle (the ACC's read-modify-writes, ASCALE's factors). A held cycle reads nothing either
+    // (rql_hn: rql_h's next value, in t_ren_q's and rb_q's next ones): TMEM's read enable is
+    // decided a cycle ahead, and the next request's read would replace the word the hold waits
+    // for (without RQL every read is an advance's, but a replay's)
+    logic       rql_h, rd1, ea1;
+    (* max_fanout = 128 *) wire ea_t = room_q && !lost_q && !rql_h && (tq_z || !rq_any);
+    wire        nrd = (|t_ren_q) && !(rd1 && !ea1);
+    wire        rql_hn = RQL && (nrd || lost_q);
+    always_ff @(posedge clk) begin
+      rd1 <= !rst && (|t_ren_q);
+      ea1 <= !rst && ea_t;
+      rql_h <= !rst && rql_hn;
+    end
     wire        rd   = room_q && !lost_q && tq_z;  // the request register's read happens now
     wire        iw   = ea_t && (|tw_en);           // writes issued
     wire        take = tq_z && t_gnt;              // ... and taken as issued
@@ -2757,10 +2803,10 @@ module otpu_mxu
         room_q <= 3'(tq_n) + 3'(iw) <= 3'd2;
         lost_q <= t_lost;
         if (ea_t) rq_any <= |t_ren_c;
-        t_ren_q <= (ea_t ? t_ren_c : rq_en) & {LANES{3'(tq_n) + 3'(iw) <= 3'd2 && tq_nn == 2'd0}};
+        t_ren_q <= (ea_t ? t_ren_c : rq_en) & {LANES{3'(tq_n) + 3'(iw) <= 3'd2 && tq_nn == 2'd0 && !rql_hn}};
         if (ea_t) rb_v <= bk_en(t_raddr_c, t_ren_c);
         rb_q <= (ea_t ? bk_en(t_raddr_c, t_ren_c) : rb_v) &
-                {TLANES{3'(tq_n) + 3'(iw) <= 3'd2 && tq_nn == 2'd0}};
+                {TLANES{3'(tq_n) + 3'(iw) <= 3'd2 && tq_nn == 2'd0 && !rql_hn}};
       end
 `ifndef SYNTHESIS
     always @(posedge clk)
@@ -2769,7 +2815,7 @@ module otpu_mxu
         if (rq_any != (|rq_en)) $fatal(1, "otpu_mxu: rq_any is not the request register's");
         if (tq_z != (tq_n == 2'd0)) $fatal(1, "otpu_mxu: tq_z is not the queue's");
         if ((|t_ren) && !tq_z) $fatal(1, "otpu_mxu: a read passes a waiting write");
-        if (t_ren_q != (rq_en & {LANES{room_q && tq_z}}))
+        if (t_ren_q != (rq_en & {LANES{room_q && tq_z && !rql_h}}))   // (RQL: none in a held cycle)
           $fatal(1, "otpu_mxu: t_ren_q is not the request register's read");
         // the read by bank is the request register's, decoded
         if (rb_v != bk_en(rq_ad, rq_en)) $fatal(1, "otpu_mxu: rb_v is not the request register's banks");
@@ -2997,13 +3043,14 @@ module otpu_mxu
           WF_NV: begin so = 32'd16 + {21'd0, i_k0, 3'd0}; ss = i_pair ? 5'd16 : 5'd8; end
           default: begin so = 32'd8 + {22'd0, i_k0, 2'd0}; ss = i_pair ? 5'd8 : 5'd4; end
         endcase
-        // GRP (WG 8): the group's Sw words (8 int8, 16 4-bit) padded to 32 / 64 / 128 bytes, then
-        // a block's entries, a step's: 8 bytes (int8), two lines (int4x / fp4x6), four (NVFP4)
+        // GRP: the group's R Sw words (R = WG int8, 2 WG 4-bit) padded to SWP = 4R bytes (8R
+        // NVFP4), then a block's entries, a step's: E = R x sb bytes (WG 8: 32 / 64 / 128 of Sw,
+        // 8 bytes int8, two lines int4x / fp4x6, four NVFP4; WG 16: 64 / 128, 16 bytes, four lines)
         if (GA)
           case (i_wf)
-            WF_W8: begin so = 32'd32 + {21'd0, i_k0, 3'd0}; ss = 8'd8; end
-            WF_NV: begin so = 32'd128 + {17'd0, i_k0, 7'd0}; ss = 8'd128; end
-            default: begin so = 32'd64 + {18'd0, i_k0, 6'd0}; ss = 8'd64; end
+            WF_W8: begin so = 32'(4 * WG) + 32'(i_k0) * 32'(WG); ss = 8'(WG); end
+            WF_NV: begin so = 32'(16 * WG) + 32'(i_k0) * 32'(16 * WG); ss = 8'(16 * WG); end
+            default: begin so = 32'(8 * WG) + 32'(i_k0) * 32'(8 * WG); ss = 8'(8 * WG); end
           endcase
         sa = srow_addr + so;
         sn = srow_addr + i_srs;

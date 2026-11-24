@@ -1144,6 +1144,24 @@ def bcuwg_transport(t, dram: int, plusargs: list, params: str):
                         plusargs=plusargs)
 
 
+def sqrlfk_transport(t, dram: int, plusargs: list, params: str):
+    """sqrl-fk35's (and sqrl-fk33's) board model (tb_sqrlfk through SimTransport sqrlfk, as
+    test_sqrlfk_board's, no random stalls: the timing's): the bridges on the target's HBM ports a
+    channel, each on otpu_hbm_model (plusargs +hbm_lat, +hbm_jit, +hbm_rbw; +cp / +ap the core's
+    and aclk's half periods), `params` (K=V,...: RLY, MWAIT, ARD, HNP, NAT_XD, ..., ints in any
+    base) its build's parameters beside the target's."""
+    from opentpu.host.board import SimTransport
+    rp = T.rtl_params(t)
+    p = {k: rp[k] for k in ("MCOLS", "LANES", "TMEM_WORDS", "SEQ_WC", "OUTER", "DSTEP2")}
+    p |= {"WG": t.arch["WG"], "ACT_ROWS": t.arch["ACT_ROWS"], "NAT_XPOST": 1}
+    p |= {k: rp[k] for k in ("ST16", "KT") if k in rp}
+    for kv in filter(None, params.split(",")):
+        k, v = kv.split("=", 1)
+        p[k] = int(v, 0)
+    return SimTransport(ch_bytes=dram // t.platform["channels_per_slice"], stall=0, seed=5, target=t, sqrlfk=True, params=p,
+                        plusargs=plusargs)
+
+
 def _solo(cfg, on: bool):
     """--solo's compile configuration: one slice."""
     return dataclasses.replace(cfg, S=1) if on else cfg
@@ -1166,10 +1184,11 @@ def main(argv=None) -> int:
     ap.add_argument("--target", default="bcu1525-wg")
     ap.add_argument("--points", default="", help="bench=P P ...;bench=... (default each bench's)")
     ap.add_argument("--dev", help="the card (/dev/xdmaN; default OTPU_DEV, else /dev/xdma0)")
-    ap.add_argument("--sim", action="store_true", help="the board model (tb_bcuwg)")
+    ap.add_argument("--sim", action="store_true", help="the board model (tb_bcuwg, tb_sqrlfk)")
     ap.add_argument("--plus", default=",".join(SIM_PLUS), help="--sim: the simulator's plusargs")
     ap.add_argument("--params", default="",
-                    help="--sim of bcu1525-wg: tb_bcuwg's parameters, K=V,... (ARD, PRD, MWAIT, RLY)")
+                    help="--sim: the board model's parameters, K=V,... (tb_bcuwg: ARD, PRD, MWAIT, "
+                         "RLY; tb_sqrlfk: RLY, MWAIT, ARD, HNP, NAT_XD, ...)")
     ap.add_argument("--cosim", action="store_true", help="the co-simulation (rtlsim, native model)")
     ap.add_argument("--ch-gbps", type=float, help="--cosim: a channel's GB/s")
     ap.add_argument("--lat-ns", type=float, help="--cosim: a channel's read latency, ns")
@@ -1236,10 +1255,13 @@ def main(argv=None) -> int:
         else:
             if a.sim:
                 plus = [x for x in a.plus.split(",") if x]
-                if t.name not in ("bcu1525-wg", "bcu1525-s2"):
+                if t.name in ("sqrl-fk35", "sqrl-fk33", "sqrl-fk35w"):
+                    tr = sqrlfk_transport(t, dense, plus, a.params)
+                elif t.name in ("bcu1525-wg", "bcu1525-s2"):
+                    tr = bcuwg_transport(t, dense, plus, a.params)
+                else:
                     raise SystemExit(f"--sim: {t.name} has no board model here (bcu1525-wg, "
-                                     f"bcu1525-s2: tb_bcuwg)")
-                tr = bcuwg_transport(t, dense, plus, a.params)
+                                     f"bcu1525-s2: tb_bcuwg; sqrl-fk35, sqrl-fk33, sqrl-fk35w: tb_sqrlfk)")
                 out["params"] = a.params
                 out["plus"] = a.plus
                 mhz = 1e6 / (2 * int(next((x for x in plus if x.startswith("+cp=")),

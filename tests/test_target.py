@@ -15,9 +15,10 @@ from opentpu.host.board import Board, ConfigMismatch, check_fits, device_config
 from opentpu.host.fake import FakeTransport
 from opentpu.isasim import Config, board_config
 
-# the targets at WG 8 (weight groups, the channel bridges' adapter knobs): the BCU1525 at one
-# slice (targets/bcu1525-wg.toml), at two (bcu1525-s2.toml) and two cards of those (bcu1525-x2)
-WG_TARGETS = {"bcu1525-wg", "bcu1525-s2", "bcu1525-x2"}
+# the targets at WG > 1 (weight groups, the channel bridges' adapter knobs): the BCU1525 at one
+# slice (targets/bcu1525-wg.toml), at two (bcu1525-s2.toml) and two cards of those (bcu1525-x2);
+# the SQRL FK35 and FK33 at WG 8, and the FK35's wide slice at WG 16 (sqrl-fk35w)
+WG_TARGETS = {"bcu1525-wg", "bcu1525-s2", "bcu1525-x2", "sqrl-fk35", "sqrl-fk33", "sqrl-fk35w"}
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -285,7 +286,8 @@ def test_wg_target():
                                       "+nat_rfc=47"]
     assert T.mem_model(t)[:2] == ["+nat_bpc=45600", "+axi_lat=25"]        # its 100 MHz
     assert T.by_platform(7) is not None and T.by_platform(7).name == "bcu1525-x2"
-    assert T.by_platform(4) is None
+    assert T.by_platform(3) is None and T.by_platform(4).name == "sqrl-fk35"
+    assert T.by_platform(8).name == "sqrl-fk33" and T.by_platform(9).name == "sqrl-fk35w"
 
 
 def test_native_channels_are_checked(tmp_path):
@@ -512,11 +514,11 @@ def test_tmem_style_from_the_target(tmp_path):
     quotes it; sim_uarch: a Verilator -G string literal): the WG targets' pumped one copy in UltraRAM
     (its block RAM is the board's), absent elsewhere: otpu_tmem's "block", which otpu_slice,
     otpu_board, otpu_top and the testbenches repeat. Not "block" or "ultra": refused."""
-    assert re.search(r'parameter string STYLE = "block"',
+    assert re.search(r'parameter (?:string )?STYLE = "block"',
                      (ROOT / "rtl/mem/otpu_tmem.sv").read_text())
     for f in ("rtl/top/otpu_slice.sv", "rtl/shell/otpu_board.sv", "rtl/top/otpu_top.sv",
               "sim/verilator/tb_board.sv", "sim/verilator/tb_top.sv"):
-        assert re.search(r'parameter string TMEM_STYLE = "block"\s*[,;]',
+        assert re.search(r'parameter (?:string )?TMEM_STYLE = "block"\s*[,;]',
                          (ROOT / f).read_text()), f
     assert (T.rtl_params("bcu1525-wg")["TMEM_STYLE"], T.sim_uarch("bcu1525-wg")["TMEM_STYLE"]) == \
         ("ultra", '"ultra"')
@@ -539,14 +541,14 @@ def test_imem_style_and_act_ucols_from_the_target(tmp_path):
     and ACT RAM in block RAM, the wait entries in UltraRAM (the chunk FIFO's lanes take the rest,
     FIFO_DEPTH 2048), absent elsewhere. Every top repeats otpu_seq's and otpu_actram's defaults."""
     seq = (ROOT / "rtl/seq/otpu_seq.sv").read_text()
-    assert re.search(r'parameter string STYLE\s*= "auto"', seq)
-    assert re.search(r'parameter string WSTYLE\s*= ""', seq) and ".STYLE(WST)" in seq
+    assert re.search(r'parameter (?:string )?STYLE\s*= "auto"', seq)
+    assert re.search(r'parameter (?:string )?WSTYLE\s*= ""', seq) and ".STYLE(WST)" in seq
     assert re.search(r"parameter int UCOLS\s*= 0\b", (ROOT / "rtl/mem/otpu_actram.sv").read_text())
     for f in ("rtl/top/otpu_slice.sv", "rtl/shell/otpu_board.sv", "rtl/top/otpu_top.sv",
               "sim/verilator/tb_board.sv", "sim/verilator/tb_top.sv"):
         src = (ROOT / f).read_text()
-        assert re.search(r'parameter string IMEM_STYLE = "auto"\s*[,;]', src), f
-        assert re.search(r'parameter string IMEM_WC_STYLE = ""\s*[,;]', src), f
+        assert re.search(r'parameter (?:string )?IMEM_STYLE = "auto"\s*[,;]', src), f
+        assert re.search(r'parameter (?:string )?IMEM_WC_STYLE = ""\s*[,;]', src), f
         assert re.search(r"parameter int ACT_UCOLS\s*= 0\s*[,;]", src), f
         assert ".IMEM_WC_STYLE(IMEM_WC_STYLE)" in src or ".WSTYLE(IMEM_WC_STYLE)" in src, f
     p, u = T.rtl_params("bcu1525-wg"), T.sim_uarch("bcu1525-wg")
@@ -575,7 +577,7 @@ def test_mxu_result_fifo_style_from_the_target(tmp_path):
     otpu_mxu does not build is an error. Every top repeats otpu_mxu's default and passes it on,
     and otpu_mxu builds each style in a branch of its own."""
     mxu = (ROOT / "rtl/mxu/otpu_mxu.sv").read_text()
-    assert re.search(r'parameter string RF_STYLE = "block"\s*[,;]', mxu)
+    assert re.search(r'parameter (?:string )?RF_STYLE = "block"\s*[,;]', mxu)
     rfm = mxu[mxu.index("begin : g_rfm"):]
     rfm = rfm[:rfm.index("assign rq[c]")]
     lut, bram = rfm[rfm.index("begin : g_lut"):], rfm[rfm.index("begin : g_bram"):]
@@ -585,7 +587,7 @@ def test_mxu_result_fifo_style_from_the_target(tmp_path):
     for f in ("rtl/top/otpu_slice.sv", "rtl/shell/otpu_board.sv", "rtl/top/otpu_top.sv",
               "sim/verilator/tb_board.sv", "sim/verilator/tb_top.sv"):
         src = (ROOT / f).read_text()
-        assert re.search(r'parameter string MXU_RF_STYLE = "block"\s*[,;]', src), f
+        assert re.search(r'parameter (?:string )?MXU_RF_STYLE = "block"\s*[,;]', src), f
         assert f.endswith("otpu_slice.sv") or ".MXU_RF_STYLE(MXU_RF_STYLE)" in src, f
     p, u = T.rtl_params("bcu1525-wg"), T.sim_uarch("bcu1525-wg")
     assert (p["MXU_RF_STYLE"], u["MXU_RF_STYLE"]) == ("distributed", '"distributed"')
@@ -609,7 +611,7 @@ def test_mxu_chunk_fifo_style_from_the_target(tmp_path):
     elsewhere; a style otpu_mxu does not build is an error. Every top repeats otpu_mxu's default
     and passes it on; the board model takes it (SimTransport)."""
     mxu = (ROOT / "rtl/mxu/otpu_mxu.sv").read_text()
-    assert re.search(r'parameter string FIFO_STYLE = "block"\s*[,;]', mxu)
+    assert re.search(r'parameter (?:string )?FIFO_STYLE = "block"\s*[,;]', mxu)
     assert 'localparam bit FU = FIFO_STYLE == "ultra";' in mxu
     assert "localparam int FB = FU ? 72 : 36;" in mxu
     xp = mxu[mxu.index("begin : g_xp"):mxu.index("begin : g_nfdw")]
@@ -625,7 +627,7 @@ def test_mxu_chunk_fifo_style_from_the_target(tmp_path):
     for f in ("rtl/top/otpu_slice.sv", "rtl/shell/otpu_board.sv", "rtl/top/otpu_top.sv",
               "sim/verilator/tb_board.sv", "sim/verilator/tb_top.sv"):
         src = (ROOT / f).read_text()
-        assert re.search(r'parameter string MXU_FIFO_STYLE = "block"\s*[,;]', src), f
+        assert re.search(r'parameter (?:string )?MXU_FIFO_STYLE = "block"\s*[,;]', src), f
         assert f.endswith("otpu_slice.sv") or ".MXU_FIFO_STYLE(MXU_FIFO_STYLE)" in src, f
     assert '"MXU_FIFO_STYLE"' in (ROOT / "opentpu/host/board.py").read_text()
     p, u = T.rtl_params("bcu1525-wg"), T.sim_uarch("bcu1525-wg")
@@ -1003,7 +1005,7 @@ def test_dram_address_bits(tmp_path):
     BCU1525 at WG 8: AW 36, its 32 GiB as 8 virtual channels of 4 GiB (two a DIMM), the RTL's
     AW, DRAM_LOG2 and CH_LOG2 from it."""
     for n in T.names():
-        if n not in ("bcu1525-wg", "bcu1525-s2", "bcu1525-x2"):
+        if n not in WG_TARGETS:
             assert T.config(n).AW == 32 and "AW" not in T.rtl_params(n), n
     # (the BCU1525 at two slices: 16 GiB a slice, 8 virtual channels of 2 GiB, AW 36 as one's)
     t2 = T.load("bcu1525-s2")
@@ -1490,7 +1492,8 @@ def test_the_mxu_epilogue_advances_on_flip_flops():
     assert wires("t_gnt") == {"take", "pop"}, wires("t_gnt")
     assert re.findall(r".*\bt_lost\b.*", tq.split("`ifndef SYNTHESIS")[0]) == ["        lost_q <= t_lost;"]
     ea = re.search(r"\(\*\s*max_fanout\s*=\s*\d+\s*\*\)\s*wire ea_t = ([^;]*);", tq).group(1)
-    assert set(re.findall(r"\w+", ea)) == {"room_q", "lost_q", "tq_z", "rq_any"}, ea
+    # (rql_h: TMEM_RQL's held cycle after a read, a register too)
+    assert set(re.findall(r"\w+", ea)) == {"room_q", "lost_q", "rql_h", "tq_z", "rq_any"}, ea
     assert "assign ea = ea_t;" in tq and "assign t_ren = t_ren_q;" in tq
     # TMEM's read enable a register, its next value off t_lost (the slice masks a replay's cycle)
     assert re.search(r"t_ren_q <= \(ea_t \? t_ren_c : rq_en\) & ", tq)
@@ -1528,7 +1531,9 @@ def test_the_real_150_mhz_paths_start_at_flip_flops():
     # the pumped bank keeps its hierarchy (otpu_clk2x.tcl names its pins); otpu_tmem_breq beside it
     assert re.search(r'\(\* keep_hierarchy = "yes" \*\)\s*module otpu_pump_bank\b', tm)
     assert "lq[l] = pdir[p] ? pr[p][int'(bk[l]) * NSB + int'(pss[p][bk[l]])] : qb[bk[l]];" in tm
-    assert "assign pdir[p] = !BYP;" in tm and "assign pr[p][b * NSB + k] = s_q[b][k][SD];" in tm
+    # (sq: the RAMs' words, or with QR their register s_qr, both straight from the RAMs' outputs)
+    assert "assign pdir[p] = !BYP;" in tm and "assign pr[p][b * NSB + k] = sq[b][k][SD];" in tm
+    assert "assign sq = s_qr," in tm and "assign sq = s_q," in tm and "s_qr <= s_q;" in tm
     mxu = src("rtl/mxu/otpu_mxu.sv")
     assert "wire more     = p_act && !c_lz;" in mxu and "(pn || c_lz)" in mxu
     assert not re.search(r"c_left\s*[!=]=\s*0\b", mxu.split("`ifndef SYNTHESIS")[0])

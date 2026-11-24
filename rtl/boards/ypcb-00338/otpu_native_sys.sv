@@ -29,6 +29,7 @@ module otpu_native_sys #(
   parameter int TMEM_PMP = 0,
   parameter int TMEM_PRK = 0,
   parameter int TMEM_SDM = -1,
+  parameter int TMEM_RQL = 0,            // the registered TMEM read ports (otpu_slice; 0: none)
   parameter int TMEM_WORDS = 1 << 16,    // TMEM words (otpu_board; the CFG_TMEM register)
   parameter int LANES = 8,
   parameter int ULANES = 8,
@@ -194,7 +195,7 @@ module otpu_native_sys #(
                .MXU_E(MXU_E), .LANES(LANES), .ULANES(ULANES),
                .TMEM_IMPL(TMEM_IMPL), .TMEM_RQ(TMEM_RQ),
                .TMEM_NSB(TMEM_NSB), .TMEM_SBP(TMEM_SBP), .TMEM_SBH(TMEM_SBH), .TMEM_RPL(TMEM_RPL), .TMEM_TDP(TMEM_TDP),
-               .TMEM_GST(TMEM_GST), .TMEM_PMP(TMEM_PMP), .TMEM_PRK(TMEM_PRK), .TMEM_SDM(TMEM_SDM),
+               .TMEM_GST(TMEM_GST), .TMEM_PMP(TMEM_PMP), .TMEM_PRK(TMEM_PRK), .TMEM_SDM(TMEM_SDM), .TMEM_RQL(TMEM_RQL),
                .TMEM_WORDS(TMEM_WORDS),
                .CORE_KHZ(CORE_KHZ), .BUILD_ID(BUILD_ID), .DDR_MTS(DDR_MTS), .DSTEP(DSTEP),
                .HOSTCAL(HOSTCAL), .SEQ_WC(SEQ_WC), .PLATFORM(PLATFORM), .ARCH_HASH(ARCH_HASH),

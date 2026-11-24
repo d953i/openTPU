@@ -13,6 +13,8 @@ OUTER off, MAC on) in every B mode. MAC (otpu_vpu MAC, Config.VMAC): MACs among
 them (B per column or a scalar) at CNS 3 and 5, WBUF 0 and 1. OUTER1 (otpu_vpu OUTER1,
 Config.OUTER1: a VPU without OUTER, OUTER with decay one on MAC's datapath): OUTERs of decay
 one among wmx's VOPs; one with a decay word stops the simulation."""
+import os
+
 import numpy as np
 import pytest
 
@@ -178,6 +180,8 @@ def run_front(streams, vops, rels, tm0, rng, tmp_path, wbuf, cns=3, fsum=False, 
                                      R / "vpu/otpu_se_comp.sv", R / "vpu/otpu_se_tail.sv",
                                      R / "vpu/otpu_vpu.sv", rtlsim.TB / "tb_se_vpu.sv"],
                         {"WBUF": int(wbuf), "CNS": cns, "FSUM": int(fsum), "VSIG": int(sig)}
+                        # SE_VPU_FBD=2: the back end two cycles behind (otpu_vpu FBD; TMEM_RQL's)
+                        | ({"FBD": 2} if wbuf and os.environ.get("SE_VPU_FBD") == "2" else {})
                         | ({"MAC": 1} if mac else {})
                         | ({"OUTER": 0, "OUTER1": 1} if outer1 else {})
                         | ({"OUTER": 0} if not outer else {}))

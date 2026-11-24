@@ -1,6 +1,7 @@
 // A behavioural model of one AXI3 port of a memory controller (simulation only: tb_hbmch):
 // 256-bit beats (AxSIZE 32 bytes, INCR), a memory of BEATS beats at the port's
-// pseudo-channel (byte addresses PC x 2^29 + 0 .. BEATS x 32 - 1), and the freedom AXI gives the
+// pseudo-channel (byte addresses PC x 2^PCL + 0 .. BEATS x 32 - 1; PCL 29, 512 MiB, by default, 30
+// for the SQRL FK35's 1 GiB channels: tb_sqrlfk), and the freedom AXI gives the
 // controller between its read and write channels: a read takes its data at a random cycle between
 // its AR and its first R beat, a write lands at a random cycle between its last W beat and its B,
 // so a read and a write in flight together on one address may pass each other either way. Writes
@@ -25,13 +26,27 @@
 // <d>/ch<PC>.bin (+dir=<d>; 32-bit big-endian words, as $fread reads them) in at time 0,
 // <d>/ch<PC>_out.bin (little-endian words) out at the rising edge that sees dump (what has landed
 // by then; the bursts that have not are counted in a message); byte o of the image at the port's
-// byte address o.
+// byte address o. The beats above the dense image (at or above BEATS, up to the pseudo-channel's
+// 2^PCL bytes) are sparse, as otpu_dimm_model's: <d>/ch<PC>_hi.txt in (absent: none; a beat not in
+// it reads 0), <d>/ch<PC>_hi_out.txt out, lines "<beat> <data>" (hex; byte j of the beat its bits
+// 8 j + 7 .. 8 j).
+//
+// ILV 1 (PHYS: a channel on two ports, otpu_hbm_ch NP 2; tb_sqrlfk HNP 2): the port is lane LANE of
+// board channel IMG's pair, its PC the lane's (2 IMG + LANE at PCL one less than the channel's), and
+// its beat w at the port is the channel image's beat 2 w + LANE (32-byte beats alternating between
+// the lanes: CAPS2 bit26's layout). Both lanes' models read the whole image (ch<IMG>.bin,
+// ch<IMG>_hi.txt) and each writes its own copy (ch<IMG>_l<LANE>_out.bin, ch<IMG>_l<LANE>_hi_out.txt),
+// whose lane's beats are its own (SimTransport merges them).
 module otpu_hbm_model #(
   parameter int BEATS = 1 << 16,
   parameter logic [4:0] PC = 5'd0,
+  parameter int PCL = 29,                  // a pseudo-channel's byte address bits
   parameter int ARQ = 64,
   parameter int AWQ = 32,
-  parameter bit PHYS = 1'b0
+  parameter bit PHYS = 1'b0,
+  parameter bit ILV = 1'b0,                // (PHYS) the port one lane of a channel's two
+  parameter int LANE = 0,
+  parameter int IMG = int'(PC)             // (PHYS) the image's board channel
 ) (
   input  logic         clk,
   input  logic         rst,
@@ -68,6 +83,7 @@ module otpu_hbm_model #(
   typedef struct { int b; int n; logic [5:0] id; } aw_t;
   typedef struct { int b; int n; logic [5:0] id; longint ta, tb; bit done; logic [15:0][255:0] d; logic [15:0][31:0] s; } wr_t;
   logic [255:0] mem [BEATS];
+  logic [255:0] hi [longint];              // (PHYS) the beats at or above BEATS, loaded or written
   rd_t    rq [$];
   aw_t    awq [$];
   wr_t    wq [$];
@@ -98,13 +114,26 @@ module otpu_hbm_model #(
       logic [31:0] w [BEATS * 8];
       if (!$value$plusargs("dir=%s", dir)) $fatal(1, "otpu_hbm_model: PHYS 1 needs +dir=");
       for (int i = 0; i < BEATS * 8; i++) w[i] = '0;
-      fd = $fopen($sformatf("%s/ch%0d.bin", dir, PC), "rb");
+      fd = $fopen($sformatf("%s/ch%0d.bin", dir, IMG), "rb");
       if (fd != 0) begin
         nread = $fread(w, fd);
         $fclose(fd);
       end
       for (int i = 0; i < BEATS; i++)
         for (int k = 0; k < 8; k++) mem[i][32 * k +: 32] = w[8 * i + k];
+      fd = $fopen($sformatf("%s/ch%0d_hi.txt", dir, IMG), "r");
+      if (fd != 0) begin
+        longint b;
+        logic [255:0] d;
+        while ($fscanf(fd, "%h %h\n", b, d) == 2) begin
+          if (b < longint'(BEATS) || b >= (longint'(1) << (PCL - 5 + ILV))) begin
+            $display("ERROR hbm %0d: ch%0d_hi.txt beat %h outside %h .. %h", PC, IMG, b, BEATS,
+                     (longint'(1) << (PCL - 5 + ILV)) - 1);
+            nerr++;
+          end else hi[b] = d;
+        end
+        $fclose(fd);
+      end
     end
     nerr = 0; wap = 0;
     arready = 1'b0; awready = 1'b0; wready = 1'b0; rvalid = 1'b0; bvalid = 1'b0;
@@ -117,8 +146,9 @@ module otpu_hbm_model #(
   // a burst's first beat in the memory, after the address checks
   function automatic int chk(input string ch, input logic [33:0] a, input logic [3:0] l);
     longint off;
-    off = longint'(a[28:0]);
-    if (a[33:29] != PC || a[4:0] != 5'd0 || off + 32 * (longint'(l) + 1) > longint'(BEATS) * 32 ||
+    off = longint'(a & ((34'd1 << PCL) - 34'd1));
+    if ((a >> PCL) != 34'(PC) || a[4:0] != 5'd0 ||
+        off + 32 * (longint'(l) + 1) > (PHYS ? longint'(1) << PCL : longint'(BEATS) * 32) ||
         (off % 4096) + 32 * (longint'(l) + 1) > 4096) begin
       if (nerr < 10) $display("ERROR hbm %0d: %s address %h len %0d", PC, ch, a, l);
       nerr++;
@@ -126,6 +156,23 @@ module otpu_hbm_model #(
     end
     return int'(off / 32);
   endfunction
+  // beat w, read and written (with a byte strobe): the dense image below BEATS, PHYS's sparse one
+  // at or above it (a beat not there reads 0); ILV: the port's beat w is the image's 2 w + LANE
+  function automatic logic [255:0] getw(input int wp);
+    int w;
+    w = ILV ? 2 * wp + LANE : wp;
+    if (w < BEATS) return mem[w];
+    return hi.exists(longint'(w)) ? hi[longint'(w)] : '0;
+  endfunction
+  task automatic putw(input int wp, input logic [255:0] d, input logic [31:0] m);
+    logic [255:0] v;
+    int w;
+    w = ILV ? 2 * wp + LANE : wp;
+    v = getw(wp);
+    for (int j = 0; j < 32; j++) if (m[j]) v[8 * j +: 8] = d[8 * j +: 8];
+    if (w < BEATS) mem[w] = v;
+    else hi[longint'(w)] = v;
+  endtask
 
   always @(posedge clk) begin
     cyc++;
@@ -162,7 +209,7 @@ module otpu_hbm_model #(
       end
       foreach (rq[i])
         if (!rq[i].got && rq[i].ts <= cyc) begin
-          for (int k = 0; k < rq[i].n; k++) rq[i].d[k] = mem[rq[i].b + k];
+          for (int k = 0; k < rq[i].n; k++) rq[i].d[k] = getw(rq[i].b + k);
           rq[i].got = 1'b1;
         end
       // ---- R: the head read's beats, one a cycle at most, rbw percent of the cycles
@@ -212,9 +259,7 @@ module otpu_hbm_model #(
       end
       foreach (wq[i])
         if (!wq[i].done && wq[i].ta <= cyc) begin
-          for (int k = 0; k < wq[i].n; k++)
-            for (int j = 0; j < 32; j++)
-              if (wq[i].s[k][j]) mem[wq[i].b + k][8 * j +: 8] = wq[i].d[k][8 * j +: 8];
+          for (int k = 0; k < wq[i].n; k++) putw(wq[i].b + k, wq[i].d[k], wq[i].s[k]);
           wq[i].done = 1'b1;
           wap += longint'(wq[i].n);
         end
@@ -239,9 +284,14 @@ module otpu_hbm_model #(
       void'($value$plusargs("dir=%s", dir));
       if (awq.size() != 0 || wq.size() != 0)
         $display("hbm %0d: %0d write bursts not landed at the dump", PC, awq.size() + wq.size());
-      fd = $fopen($sformatf("%s/ch%0d_out.bin", dir, PC), "wb");
+      fd = $fopen(ILV ? $sformatf("%s/ch%0d_l%0d_out.bin", dir, IMG, LANE)
+                      : $sformatf("%s/ch%0d_out.bin", dir, IMG), "wb");
       for (int i = 0; i < BEATS; i++)
         for (int k = 0; k < 8; k++) $fwrite(fd, "%u", mem[i][32 * k +: 32]);
+      $fclose(fd);
+      fd = $fopen(ILV ? $sformatf("%s/ch%0d_l%0d_hi_out.txt", dir, IMG, LANE)
+                      : $sformatf("%s/ch%0d_hi_out.txt", dir, IMG), "w");
+      foreach (hi[b]) $fwrite(fd, "%0h %h\n", b, hi[b]);
       $fclose(fd);
     end
   end

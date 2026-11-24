@@ -117,7 +117,7 @@ def test_caps2_gather_and_the_load_refusal():
     b = Board(FakeTransport(devname=None, regmap=5, gather=False))
     assert b.info()["caps2"] == {"gather": False, "outer": True, "dstep2": False,
                                  "se_own": False, "bmc": False, "kt": False, "bhw": 0, "icache": False,
-                                 "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False} and not b.gather
+                                 "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False, "chilv": False} and not b.gather
     with pytest.raises(NoGather, match="instruction 0"):
         b.load_program(4096, gather)
     with pytest.raises(NoGather, match="slice 0"):
@@ -130,7 +130,7 @@ def test_caps2_gather_and_the_load_refusal():
         assert ok.gather and ok.info()["caps2"] == {"gather": True, "outer": True,
                                                     "dstep2": False, "se_own": False, "bmc": False,
                                                     "kt": False, "bhw": 0, "icache": False,
-                                                    "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False}
+                                                    "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False, "chilv": False}
         ok.load_program(4096, gather)
         assert t.reg_read(R.R_PROG_N) == 2
     cfg = board_config()
@@ -139,10 +139,10 @@ def test_caps2_gather_and_the_load_refusal():
     assert names - {n for g, n, _ in op_checks(cfg, gather=False)} == {"GATHER"}
     assert R.caps2(None) == {"gather": True, "outer": True, "dstep2": False, "se_own": False,
                              "bmc": False, "kt": False, "bhw": 0, "icache": False, "st16": "", "xcard": False,
-                             "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False}
+                             "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False, "chilv": False}
     assert R.caps2(0) == {"gather": False, "outer": True, "dstep2": False, "se_own": False,
                           "bmc": False, "kt": False, "bhw": 0, "icache": False, "st16": "", "xcard": False,
-                          "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False}
+                          "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False, "chilv": False}
     assert R.caps2(R.CAP2_FSUM)["fsum"] and not R.caps2(R.CAP2_GATHER)["fsum"]
     assert R.caps2(R.CAP2_VSIG)["vsig"] and not R.caps2(R.CAP2_FSUM)["vsig"]
     assert R.caps2(R.CAP2_VMAC)["vmac"] and not R.caps2(R.CAP2_VSIG)["vmac"]
@@ -198,15 +198,15 @@ def test_caps2_no_outer():
     from opentpu.host.opchecks import op_checks
     assert R.caps2(R.CAP2_NO_OUTER) == {"gather": False, "outer": False, "dstep2": False,
                                         "se_own": False, "bmc": False, "kt": False, "bhw": 0, "icache": False,
-                                        "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False}
+                                        "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False, "chilv": False}
     assert R.caps2(R.CAP2_GATHER | R.CAP2_NO_OUTER) == {"gather": True, "outer": False,
                                                         "dstep2": False, "se_own": False,
                                                         "bmc": False, "kt": False, "bhw": 0, "icache": False,
-                                                        "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False}
+                                                        "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False, "chilv": False}
     b = Board(FakeTransport(devname=None, regmap=5, outer=False))
     assert b.info()["caps2"] == {"gather": True, "outer": False, "dstep2": False,
                                  "se_own": False, "bmc": False, "kt": False, "bhw": 0, "icache": False,
-                                 "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False}
+                                 "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False, "chilv": False}
     cfg = device_config(b.info())
     assert not cfg.OUTER
     for t in (FakeTransport(devname=None, regmap=5), FakeTransport(devname=None, regmap=4)):
@@ -230,7 +230,7 @@ def test_caps2_dstep2():
     assert R.caps2(R.CAP2_GATHER | R.CAP2_DSTEP2) == {"gather": True, "outer": True,
                                                       "dstep2": True, "se_own": False, "bmc": False,
                                                       "kt": False, "bhw": 0, "icache": False,
-                                                      "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False}
+                                                      "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False, "chilv": False}
     b = Board(FakeTransport(devname=None, regmap=5, dstep=True, dstep2=True))
     assert b.info()["caps2"]["dstep2"] and device_config(b.info()).DSTEP2
     for t in (FakeTransport(devname=None, regmap=5), FakeTransport(devname=None, regmap=4)):
@@ -254,7 +254,7 @@ def test_caps2_se_own():
     assert R.caps2(R.CAP2_GATHER | R.CAP2_SE_OWN) == {"gather": True, "outer": True,
                                                       "dstep2": False, "se_own": True, "bmc": False,
                                                       "kt": False, "bhw": 0, "icache": False,
-                                                      "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False}
+                                                      "st16": "", "xcard": False, "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False, "chilv": False}
     b = Board(FakeTransport(devname=None, regmap=5, dstep=True, se_own=True))
     assert b.info()["caps2"]["se_own"] and device_config(b.info()).SE_OWN
     for t in (FakeTransport(devname=None, regmap=5), FakeTransport(devname=None, regmap=4)):
@@ -308,7 +308,7 @@ def test_caps2_kt():
     assert R.caps2(R.CAP2_GATHER | R.CAP2_KT) == {"gather": True, "outer": True, "dstep2": False,
                                                   "se_own": False, "bmc": False, "kt": True,
                                                   "bhw": 0, "icache": False, "st16": "", "xcard": False,
-                                                  "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False}
+                                                  "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False, "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False, "chilv": False}
     b = Board(FakeTransport(devname=None, regmap=5, kt=True))
     assert b.info()["caps2"]["kt"] and device_config(b.info()).KT
     for t in (FakeTransport(devname=None, regmap=5), FakeTransport(devname=None, regmap=4)):

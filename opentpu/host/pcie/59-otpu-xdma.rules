@@ -4,3 +4,5 @@
 # revision 01 on (class 12 00 00, subsystem 10ee:4f54) by the subsystem ID, whatever the device ID.
 ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10ee", ATTR{device}=="0x7028", ATTR{driver_override}="xdma", RUN{builtin}+="kmod load xdma"
 ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10ee", ATTR{subsystem_vendor}=="0x10ee", ATTR{subsystem_device}=="0x4f54", ATTR{driver_override}="xdma", RUN{builtin}+="kmod load xdma"
+# The SQRL Forest Kitten FK33 / FK35 bitstreams (boards/sqrl-fk/vivado/bd.tcl) keep SQRL's identity, 1e24:1533.
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x1e24", ATTR{device}=="0x1533", ATTR{driver_override}="xdma", RUN{builtin}+="kmod load xdma"

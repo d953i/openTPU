@@ -95,6 +95,7 @@ module otpu_se_comp
   input  logic [LANES-1:0] in_m,             // lane mask (carried)
   input  logic [MW-1:0]    in_meta,
   output logic             hold,             // an entry HA cycles from now would collide
+  output logic             hold_n2,          // ... HA + 2 (an issuer two steps ahead: otpu_vpu FBD 2)
   output logic             hold_n,           // ... HA + 1 cycles from now (after this cycle's
                                              // step: an issuer a step ahead of `en`, otpu_vpu FB)
   // the stage units (EXT): operands at stage s's input mux this cycle (st_sel[s]), the
@@ -433,6 +434,8 @@ module otpu_se_comp
   assign ret  = ret_r;
   assign hold = cpos[T - HA - 1];         // it will return HA cycles from now
   assign hold_n = cpos[T - HA - 2];       // HA + 1
+  assign hold_n2 = cpos[T - HA - 3];      // HA + 2
+  initial if (T - HA - 3 < 0) $fatal(1, "otpu_se_comp: HA %0d leaves no hold_n2 (T %0d)", HA, T);
   assign out_v = lp_v && fin;
   assign out_m = lp_m.mask;
   assign out_meta = lp_m.m;

@@ -1,0 +1,110 @@
+# The SQRL Forest Kitten 35: Virtex UltraScale+ HBM xcvu35p-fsvh2104-2-e, 8 GB HBM2 in two stacks
+# (32 pseudo-channels of 256 MiB, 32 AXI3 256-bit ports), PCIe Gen4 x8 on the card's edge
+# (docs/sqrl-fk.md; the FK33: targets/sqrl-fk33.toml). One WG slice (the bcu1525-wg slice: MCOLS 8, WG 8) on 8 channels of 128-byte
+# beats, channel j an otpu_hbm_ch bridge on HBM mini-switch j (its 1 GiB, ports 4j .. 4j + 3): the
+# bridge on port 4j, the host's DMA window j on port 4j + 1. Vivado 2019.2.
+
+[target]
+name = "sqrl-fk35"
+kind = "fpga"
+platform_id = 4
+description = "SQRL FK35: xcvu35p, 8 GB HBM2, XDMA Gen4 x8; 1 slice x 8 channels (WG 8)"
+
+[arch]
+S = 1
+D = 128
+MCOLS = 8                       # 8 physical MXU columns, 8 weight rows a step (WG 8)
+WG = 8
+ACT_BLOCKS = 128
+ACT_ROWS = 16
+TMEM_WORDS = 131072
+IMEM_WORDS = 32768
+AW = 33                         # DRAM addresses of 33 bits: the card's 8 GiB
+DRAM_BYTES = 8589934592         # 8 GiB: 8 channels of 1 GiB, one HBM mini-switch each
+BHW = 0                         # the bank-half window is otpu_mig_pair's (DDR4); none on HBM
+LANES = 8
+PAIR = false                    # WG > 1: every MM in groups (GALL)
+DSTEP = true
+STREAM = true
+SEQ_WC = true
+OUTER = false                   # DeltaNet runs DSTEP, no VOP OUTER
+DSTEP2 = true
+KT = true                       # MM's K tail (as bcu1525-wg:bhw16)
+ST16 = "e6m9"                   # DeltaNet states in 16 bits (as bcu1525-wg:bhw16)
+ICACHE = false
+
+[uarch]
+MXU_IMPL = 2
+MXU_CL = 16
+MXU_E = 8
+VPU_CL = 2
+ULANES = 8
+TMEM_IMPL = 3
+TMEM_NSB = 2
+TMEM_RPL = true
+TMEM_TDP = true
+TMEM_GST = true
+TMEM_PMP = 1                    # pumped at 2x (core_clk2x)
+TMEM_RQL = 255                  # every TMEM read port's data registered (at the RAMs' outputs, otpu_tmem QR):
+                                #   the 225 MHz core's URAM -> unit paths
+TMEM_STYLE = "ultra"
+IMEM_STYLE = "block"
+IMEM_WC_STYLE = "ultra"
+ACT_UCOLS = 0
+MXU_RF_STYLE = "distributed"
+RPB = 0
+WPB = 1
+WIN = 32                        # the sequencer's window (as bcu1525-wg:bhw16)
+FIFO_DEPTH = 2048               # the MXU's chunk FIFO, its lanes in UltraRAM
+MXU_FIFO_STYLE = "ultra"
+MXU_QD = 4
+QUANT_R1 = true
+QUANT_PW = 2
+TRACE_DEPTH = 16384
+PQ_WIN = 1024
+CHASH = true
+NAT_APF = 8
+NAT_AD = 16
+NAT_RD = 16
+NAT_XD = 128                    # port W's reads in flight a channel (otpu_native_dram XD; default 64): at a
+                                #   225 MHz core 64 x 128 B covers ~285 ns of a ~425 ns round trip (FK35 r15a's
+                                #   fp4 stream 154 GB/s); 128: 207 GB/s on tb_sqrlfk (board_perf --sim, 128 MiB)
+NAT_WPOST = true
+NAT_SWG = true
+NAT_FILL = false                # the HBM's AXI ports take WSTRB
+NAT_XPOST = true
+NAT_RHB = true
+NAT_XSTG = 2                    # the adapters beside the slice (SLR1); the channels' AXI halves
+NAT_XSTG_P = 2                  #   beside the HBM (SLR0) inside the bridges (otpu_hbm_ch N)
+SE_R = 2
+DMA_DEPTH = 512
+
+[tech]
+family = "xilinxus"
+part = "xcvu35p-fsvh2104-2-e"
+vendor = "xilinx"
+
+[platform]
+board = "sqrl-fk"
+core_mhz = 225.0                # half uclk (one MMCM at VCO 900: 225 / 450 / 450 / 100 MHz); the FK35 closes
+                                #   it with TMEM_RQL (docs/sqrl-fk.md)
+mem = "hbm2"
+mem_mts = 1800
+mem_ctrl = "xilinx_hbm"         # AMD's HBM IP, 32 AXI3 256-bit ports
+hostcal = false
+channels_per_slice = 8
+channel_bytes = 1073741824      # channel j: HBM mini-switch j, the host's DMA window j at j x 1 GiB
+beat_bytes = 128
+hbm_ports = 2                   # HBM AXI ports a channel's bridge drives: 4j and 4j + 2 in lockstep, the
+                                #   channel's bytes interleaved at 32 over its two halves (otpu_hbm_ch NP 2,
+                                #   CAPS2 bit26; the host's window j laid out alike). 1: port 4j alone
+host = "pcie"
+pcie_gen = 4
+pcie_lanes = 8
+# The co-simulation's channel model: one bridge's 256-bit AXI3 port, 32 bytes an aclk at 450 MHz
+# (14.4 GB/s) at ~90%, HBM refresh (tRFC ~260 ns every tREFI 3.9 us), ~150 ns from the bridge's
+# command to its data. Estimates until the card measures them.
+sim_ch_gbps = 12.96
+sim_lat_ns = 150
+sim_refi_ns = 3900
+sim_rfc_ns = 260

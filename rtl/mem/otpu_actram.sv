@@ -217,7 +217,7 @@ module otpu_actram #(
   end
 
   for (genvar j = 0; j < MCOLS; j++) begin : g_row
-    localparam string ST = (j < UCOLS) ? "ultra" : "auto";
+    localparam ST = (j < UCOLS) ? "ultra" : "auto";
     logic [63:0]    rs;
     wire [BW-1:0] rb = r_hi[j] ? r_blk2[BW-1:0] : r_blk[BW-1:0];
     wire [GW+BW-1:0] ra = (GROUPS > 1) ? {r_grp[GW-1:0], rb} : (GW+BW)'(rb);

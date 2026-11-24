@@ -15,7 +15,9 @@
 module tb_se_vpu #(parameter bit WBUF = 1'b1, parameter int GNT_PCT = 80, parameter int CNS = 3,
                    parameter bit FSUM = 1'b0, parameter bit VSIG = 1'b0,
                    parameter bit MAC = 1'b0, parameter bit OUTER = 1'b1,
-                   parameter bit OUTER1 = 1'b0);
+                   parameter bit OUTER1 = 1'b0,
+                   parameter int FBD = 1);  // WBUF: otpu_vpu FBD (2: the read data through one more
+                                            // register, as otpu_slice's TMEM_RQL gives it)
   import otpu_pkg::*;
   import otpu_fp::*;
   localparam int L = 8;
@@ -30,7 +32,13 @@ module tb_se_vpu #(parameter bit WBUF = 1'b1, parameter int GNT_PCT = 80, parame
   logic start = 1'b0, rdy, done, gnt = 1'b1, ren;
   cmd_t cmd;
   logic [L-1:0] ta_en, tb_en, tw_en;
-  logic [L-1:0][31:0] ta_addr, tb_addr, ta_data, tb_data, tw_addr, tw_data;
+  logic [L-1:0][31:0] ta_addr, tb_addr, ta_data, tb_data, tw_addr, tw_data, ta_du, tb_du;
+  if (WBUF && FBD == 2) begin : g_rql
+    always_ff @(posedge clk) begin ta_du <= ta_data; tb_du <= tb_data; end
+  end else begin : g_nrql
+    assign ta_du = ta_data;
+    assign tb_du = tb_data;
+  end
   logic pf_u;
   logic [31:0] pf_frz;
   // the stream port
@@ -41,10 +49,10 @@ module tb_se_vpu #(parameter bit WBUF = 1'b1, parameter int GNT_PCT = 80, parame
   logic [2:0] ss_fk = SF_NONE;
   logic [4:0] ss_fi = '0;
 
-  otpu_vpu #(.LANES(L), .WBUF(WBUF), .HAS_SE(1'b1), .CNS(CNS), .FSUM(FSUM), .VSIG(VSIG), .MAC(MAC),
+  otpu_vpu #(.LANES(L), .WBUF(WBUF), .FBD(FBD), .HAS_SE(1'b1), .CNS(CNS), .FSUM(FSUM), .VSIG(VSIG), .MAC(MAC),
              .OUTER(OUTER), .OUTER1(OUTER1)) dut (
-    .clk, .rst, .start, .cmd, .rdy, .done, .gnt, .ren, .rhold(1'b0), .ta_en, .ta_addr, .ta_data, .tb_en,
-    .tb_addr, .tb_data, .tw_en, .tw_addr, .tw_data, .pf_u, .pf_frz,
+    .clk, .rst, .start, .cmd, .rdy, .done, .gnt, .ren, .rhold(1'b0), .ta_en, .ta_addr, .ta_data(ta_du), .tb_en,
+    .tb_addr, .tb_data(tb_du), .tw_en, .tw_addr, .tw_data, .pf_u, .pf_frz,
     .ss_req, .ss_gnt, .ss_cfg, .ss_pe, .ss_in_v, .ss_in_d, .ss_fk, .ss_fi, .ss_fd, .ss_y_v,
     .ss_y_d, .ss_o_v, .ss_o_d);
 

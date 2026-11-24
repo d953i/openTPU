@@ -64,6 +64,7 @@ module tb_top;
   parameter int TMEM_PMP   = 0;       // TMEM_TDP: 2 the pumped RAMs' model
   parameter int TMEM_PRK   = 0;       // TMEM_IMPL 3: the read ports' ranks (otpu_slice)
   parameter int TMEM_SDM   = -1;      // TMEM_TDP: the read ports' RAM sides (otpu_slice)
+  parameter int TMEM_RQL   = 0;       // the read ports whose data is registered (otpu_slice)
   parameter string TMEM_STYLE = "block"; // TMEM_PMP 1: the pumped RAMs' (otpu_slice)
   parameter string IMEM_STYLE = "auto";  // IMEM's RAMs (otpu_slice)
   parameter string IMEM_WC_STYLE = "";   // its wait entries', if not IMEM_STYLE's (otpu_slice)
@@ -115,7 +116,7 @@ module tb_top;
              .TMEM_IMPL(TMEM_IMPL), .TMEM_RQ(TMEM_RQ), .TMEM_NCP(TMEM_NCP),
              .TMEM_NSB(TMEM_NSB), .TMEM_SBP(TMEM_SBP), .TMEM_SBH(TMEM_SBH),
              .TMEM_RPL(TMEM_RPL), .TMEM_TDP(TMEM_TDP), .TMEM_GST(TMEM_GST),
-             .TMEM_PMP(TMEM_PMP), .TMEM_PRK(TMEM_PRK), .TMEM_SDM(TMEM_SDM),
+             .TMEM_PMP(TMEM_PMP), .TMEM_PRK(TMEM_PRK), .TMEM_SDM(TMEM_SDM), .TMEM_RQL(TMEM_RQL),
              .TMEM_STYLE(TMEM_STYLE), .IMEM_STYLE(IMEM_STYLE), .ACT_UCOLS(ACT_UCOLS),
              .MXU_RF_STYLE(MXU_RF_STYLE), .MXU_FIFO_STYLE(MXU_FIFO_STYLE),
              .MXU_RF_ROWS(MXU_RF_ROWS),

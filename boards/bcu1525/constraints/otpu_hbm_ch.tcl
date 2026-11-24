@@ -60,8 +60,10 @@ if {![llength $f_rd]} {
   namespace eval ::otpu {}
   lappend ::otpu::fail "otpu_hbm_ch.tcl: [current_instance .]: no u_rd FIFO (g_rd\[q\].u_rd) found: their pointers unconstrained"
 }
-foreach {f c_w c_r t_w t_r} [concat [list u_cq $c_clk $c_acl $t_clk $t_acl u_wd $c_clk $c_acl $t_clk $t_acl] \
-                                    [join [lmap f $f_rd {list $f $c_acl $c_clk $t_acl $t_clk}]]] {
+# (foreach, not lmap: Vivado 2019.2's Tcl 8.5 has no lmap, the SQRL FK builds')
+set f_all [list u_cq $c_clk $c_acl $t_clk $t_acl u_wd $c_clk $c_acl $t_clk $t_acl]
+foreach f $f_rd { lappend f_all $f $c_acl $c_clk $t_acl $t_clk }
+foreach {f c_w c_r t_w t_r} $f_all {
   set_max_delay -datapath_only -from $c_w -to [get_cells "$f/wgray_r1_reg\[*\]"] $t_w
   set_bus_skew -from [get_cells "$f/wgray_reg\[*\] $f/wbin_reg\[*\]"] -to [get_cells "$f/wgray_r1_reg\[*\]"] $k_ca
   set_max_delay -datapath_only -from $c_r -to [get_cells "$f/rgray_w1_reg\[*\]"] $t_r

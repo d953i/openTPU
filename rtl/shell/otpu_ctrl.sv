@@ -90,6 +90,10 @@
 //                      QONCE; otpu_quant, otpu_dma LDA; docs/isa.md "Quantize once")
 //                      bit25 SPLMM: MM SPL, a split's terms as one MM (otpu_board
 //                      MXU_SPL, otpu_mxu SPL; docs/isa.md "Split terms")
+//                      bit26 CHILV: each memory channel on two ports of the memory, its bytes
+//                      interleaved at 32 (otpu_board CH_ILV; otpu_hbm_ch NP 2): the host's
+//                      window into channel j lays the channel's byte o at j x CB x 2^CAW +
+//                      (o >> 5 & 1) x CB x 2^(CAW-1) + (o >> 6) x 32 + o % 32
 //   0x60 + 4k      RW  ARG0..ARG7: the run's arguments, R8..R15 when RUN rises (CAPS bit25;
 //                      docs/isa.md "Arguments"); reset 0
 //   0x80 CFG_SLICES   RO  slices S (version 4: the configuration the target file built,
@@ -167,6 +171,7 @@ module otpu_ctrl #(
   parameter bit OUTER1 = 1'b0,           // CAPS2 bit23: VOP OUTER decay one (otpu_vpu OUTER1)
   parameter bit QONCE  = 1'b0,           // CAPS2 bit24: QACT flag ST and LDA (otpu_quant, otpu_dma)
   parameter bit SPLMM = 1'b0,            // CAPS2 bit25: MM SPL (otpu_mxu SPL)
+  parameter bit CHILV = 1'b0,            // CAPS2 bit26: a channel's bytes over two memory ports
   parameter int BHW = 0,                 // CAPS2 bits 11:6: the bank-half window's slice bytes, log2
   parameter int LDP = 2,                 // cycles after LOAD before the loaders' busy shows (>= 2)
   // the configuration registers (CFG_*, register map 4): the target's values
@@ -270,11 +275,11 @@ module otpu_ctrl #(
                                   CHASH, DSTEP, PAIR, 1'b1, DDR_MTS != 0, HAS_I2C, HAS_TEMP,
                                   TRACE_DEPTH != 0};
 
-  // bit25 SPLMM, bit24 QONCE, bit23 OUTER1, bit22 QSTHL, bit21 QHL, bit20 VMAC, bit19 VSIG, bit18 ST16S, bit17 SPLITQ, bit16 FSUM, bit15 XCARD, bits 14:13 ST16, bit12 ICACHE, bits 11:6 BHW, bit5 KT,
+  // bit26 CHILV, bit25 SPLMM, bit24 QONCE, bit23 OUTER1, bit22 QSTHL, bit21 QHL, bit20 VMAC, bit19 VSIG, bit18 ST16S, bit17 SPLITQ, bit16 FSUM, bit15 XCARD, bits 14:13 ST16, bit12 ICACHE, bits 11:6 BHW, bit5 KT,
   // bit4 BMC, bit3 SE_OWN, bit2 DSTEP2, bit1 NO_OUTER, bit0 GATHER
   initial if (BHW < 0 || BHW > 63) $fatal(1, "otpu_ctrl: BHW %0d (0 .. 63)", BHW);
   initial if (ST16 < 0 || ST16 > 2) $fatal(1, "otpu_ctrl: ST16 %0d (0 .. 2)", ST16);
-  localparam logic [31:0] CAPS2 = {6'd0, SPLMM, QONCE, OUTER1, QSTHL, QHL, VMAC, VSIG, ST16S, SPLITQ, FSUM, NC > 1, 2'(ST16), ICACHE, 6'(BHW), KT, HAS_BMC, SE_OWN, DSTEP2, !OUTER,
+  localparam logic [31:0] CAPS2 = {5'd0, CHILV, SPLMM, QONCE, OUTER1, QSTHL, QHL, VMAC, VSIG, ST16S, SPLITQ, FSUM, NC > 1, 2'(ST16), ICACHE, 6'(BHW), KT, HAS_BMC, SE_OWN, DSTEP2, !OUTER,
                                    COLL_GATHER || S > 1};
 
   logic [63:0] cycles;

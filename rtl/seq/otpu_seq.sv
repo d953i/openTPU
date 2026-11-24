@@ -76,9 +76,9 @@ module otpu_seq
   // instruction, a mask of the VPU instructions 1..31 back it waits for. No footprints, no range
   // compares. 0: today's scoreboard.
   parameter bit WAITC      = 1'b0,
-  parameter string STYLE   = "auto",  // IMEM's and the wait entries' RAMs (otpu_ram_1r1w STYLE; "ultra":
+  parameter STYLE   = "auto",  // IMEM's and the wait entries' RAMs (otpu_ram_1r1w STYLE; "ultra":
                                       //   the WG targets' UltraRAM)
-  parameter string WSTYLE  = "",      // the wait entries' RAMs, if not STYLE's (the WG targets': IMEM in
+  parameter WSTYLE  = "",      // the wait entries' RAMs, if not STYLE's (the WG targets': IMEM in
                                       //   block RAM, the wait entries in UltraRAM)
   parameter bit DSTEP2     = 1'b0,    // DSTEP's pair (otpu_dma DSTEP2): its footprint's ranges
   parameter bit FOLLOW     = 1'b0,    // WAITC: the wait entries' FOLLOW (otpu_slice: at S > 1)
@@ -477,11 +477,11 @@ module otpu_seq
   // The simulation's loads below name the RAM's g_auto words, so it simulates STYLE as "auto"
   // (the styles are the same code but for the synthesis attribute)
 `ifdef SYNTHESIS
-  localparam string IST = STYLE;
-  localparam string WST = (WSTYLE == "") ? STYLE : WSTYLE;
+  localparam IST = STYLE;
+  localparam WST = (WSTYLE == "") ? STYLE : WSTYLE;
 `else
-  localparam string IST = "auto";
-  localparam string WST = "auto";
+  localparam IST = "auto";
+  localparam WST = "auto";
 `endif
   otpu_ram_1r1w #(.W(D*8), .N(NROW), .STYLE(IST), .ZERO(1'b0)) u_imem (
     .clk, .we(ICACHE ? ic_we : im_we), .wa(RW'(ICACHE ? ic_row : im_row)), .wd(im_data), .re(fe),

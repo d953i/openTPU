@@ -105,6 +105,15 @@ module otpu_dma
   parameter int AW    = 32,                           // DRAM byte address bits (otpu_seq AW)
   parameter bit LDA   = 1'b0,                         // LDA: DRAM -> ACT RAM (above)
   parameter int ALANES = 16,                          // ... its ACT write's bytes (otpu_actram LANES)
+  // RQL (otpu_slice TMEM_RQL): t_rdata is TMEM's read data through the slice's register, a cycle
+  // later. The DMA's reads always happen (its port is TMEM's first, never held or replayed), so
+  // its data changes exactly the cycle after each of its reads, and every capture moves a cycle:
+  // ST's read pipeline takes one more stage (pb) and its data from t_rdata, or, when the
+  // pipeline did not move the cycle before, from t_rh (t_rdata as it was then: a capture on a
+  // moving cycle of the data of the read of the moving cycle before, as without RQL); the fill's
+  // tags (fr_k, fr_i) one more register, the run a cycle later (ds_fx2); a STREAM's descriptor a
+  // cycle later (ds_dw2)
+  parameter bit RQL   = 1'b0,
   parameter int WA    = waw(AW)                       // port B's word address bits (derived)
 ) (
   input  logic                    clk,
@@ -410,9 +419,9 @@ module otpu_dma
   // its request forms (the request register, then the RAM), so the fill's tags pass fr_k0 and
   // the run starts a cycle after the fill's last request (ds_fx), and a STREAM's descriptor is
   // captured a cycle after its request leaves the register (ds_dw)
-  logic [2:0]   fr_k0, fr_k;                         // the fill step requested / read last cycle
-  logic [4:0]   fr_i0, fr_i;
-  logic         ds_fx, ds_dw;
+  logic [2:0]   fr_k0, fr_k1, fr_k;                  // the fill step requested / read last cycle
+  logic [4:0]   fr_i0, fr_i1, fr_i;                  //   (RQL: through fr_k1, fr_i1)
+  logic         ds_fx, ds_dw, ds_fx2, ds_dw2;        // (RQL: a cycle more, ds_fx2 / ds_dw2)
   // H16: a 16-bit chunk's 2 SPC segments (ds_hr / ds_hw: the stream's source / destination is
   // in 16 bits)
   localparam int SPB = H16 ? 2 * SPC : SPC;
@@ -1171,6 +1180,13 @@ module otpu_dma
   logic                   pa0, pla0, pa, pla;
   int                     ppa0, ppa;
   logic [W-1:0]           pma0, pma;
+  // RQL: the stage after pa (pb, ppb, pmb, plb), adv a cycle late (adv_d1), t_rdata held from the
+  // cycle after a moving one (t_rh) and the capture's source (t_rc)
+  logic                   pb, plb, adv_d1;
+  int                     ppb;
+  logic [W-1:0]           pmb;
+  logic [LANES-1:0][31:0] t_rh, t_rc;
+  assign t_rc = (!RQL || adv_d1) ? t_rdata : t_rh;
   logic [W-1:0][31:0]     t_rq;
   logic                   st_pend, pl;
   (* max_fanout = 64 *) int pp;   // selects every data bit of b_wdata: replicated
@@ -1204,7 +1220,7 @@ module otpu_dma
     oc_st = oc_nx(occ, st_push, st_iss);
     if (rst || go) adv_nx = 1'b1;
     else if (!ackw && busy && is_st)
-      adv_nx = !((adv ? pa : st_pend) && (adv ? pla : pl)) || oc_st[1];
+      adv_nx = !((adv ? (RQL ? pb : pa) : st_pend) && (adv ? (RQL ? plb : pla) : pl)) || oc_st[1];
     else adv_nx = adv;
   end
   // ... and by bank (otpu_tmem PBR): t_rbv the pending request's banks (with t_rv), t_rb_q what
@@ -1283,8 +1299,12 @@ module otpu_dma
   always_ff @(posedge clk) begin
     fr_k0 <= rst ? SF_NONE : fk_k;
     fr_i0 <= fk_i;
-    fr_k <= rst ? SF_NONE : fr_k0;
-    fr_i <= fr_i0;
+    fr_k1 <= rst ? SF_NONE : fr_k0;
+    fr_i1 <= fr_i0;
+    fr_k <= rst ? SF_NONE : (RQL ? fr_k1 : fr_k0);
+    fr_i <= RQL ? fr_i1 : fr_i0;
+    adv_d1 <= !rst && adv;
+    if (adv_d1) t_rh <= t_rdata;
     pe <= !rst && (ds_take || ds_drain);
     pe_in <= ds_take;
     pe_zero <= ds_zero || ds_spad;
@@ -1365,7 +1385,7 @@ module otpu_dma
       ld_fin <= 1'b0;
       dv_v <= 1'b0;
       busy <= 1'b0;
-      st_pend <= 1'b0; pa <= 1'b0; pa0 <= 1'b0;
+      st_pend <= 1'b0; pa <= 1'b0; pa0 <= 1'b0; pb <= 1'b0;
       st_wq <= 1'b0;
       ackw <= 1'b0;
       ds_wr <= 1'b0;
@@ -1373,7 +1393,7 @@ module otpu_dma
       ds_hr <= 1'b0; ds_hw <= 1'b0;
       ds_dsc <= 1'b0; ds_dsd <= 1'b0; ds_su <= 1'b0; ds_wait <= 1'b0;
       ds_fill <= 1'b0; ds_run <= 1'b0; ds_out <= 1'b0;
-      ds_fx <= 1'b0; ds_dw <= 1'b0;
+      ds_fx <= 1'b0; ds_dw <= 1'b0; ds_fx2 <= 1'b0; ds_dw2 <= 1'b0;
       ss_req <= 1'b0;
       is_ww <= 1'b0; ww_c1 <= 1'b0; ww_c2 <= 1'b0; ww_sl <= 1'b0; ww_late <= 1'b0; err <= 1'b0;
       is_la <= 1'b0; la_dr <= 1'b0; rq_la <= 1'b0;
@@ -1393,10 +1413,10 @@ module otpu_dma
       ds_ycnt <= '0; ds_ocnt <= '0; ds_wch <= '0;
       ds_dsc <= gc.op == OP_STREAM; ds_dsd <= 1'b0; ds_su <= gc.op == OP_DSTEP;
       ds_wait <= 1'b0; ds_fill <= 1'b0; ds_run <= 1'b0; ds_out <= 1'b0;
-      ds_fx <= 1'b0; ds_dw <= 1'b0;
+      ds_fx <= 1'b0; ds_dw <= 1'b0; ds_fx2 <= 1'b0; ds_dw2 <= 1'b0;
       og <= '0; gt <= '0; gh <= '0; ds_pos <= '0; oi <= '0; ds_wr <= 1'b0;
       ds_rr <= 1'b0; ds_rc <= '0;
-      st_pend <= 1'b0; pa <= 1'b0; pa0 <= 1'b0;
+      st_pend <= 1'b0; pa <= 1'b0; pa0 <= 1'b0; pb <= 1'b0;
       ackw <= 1'b0;
       busy <= 1'b1;
     end else if (go) begin
@@ -1427,7 +1447,7 @@ module otpu_dma
       ic <= gd.ic;
       cleft <= gd.nc; cl_nz <= gd.nc != 0; cl_one <= gd.nc == 1;
       occ <= '0; {oc_nf, oc_lr} <= oc_of('0); cnt <= '0; wp <= '0; rp <= '0;
-      st_pend <= 1'b0; pa <= 1'b0; pa0 <= 1'b0;
+      st_pend <= 1'b0; pa <= 1'b0; pa0 <= 1'b0; pb <= 1'b0;
       st_wq <= 1'b0;
       st_fin <= 1'b0;
       cbm <= '0;
@@ -1455,7 +1475,7 @@ module otpu_dma
           is_st <= 1'b0;
           dw <= gd.a; de <= gd.e; sw <= gd.sw; so <= gd.so; sm <= gd.sm;
           sleft <= gd.ns; sl_nz <= gd.ns != 0; sl_one <= gd.ns == 1;
-          st_pend <= 1'b0; pa <= 1'b0; pa0 <= 1'b0; st_wq <= 1'b0; st_fin <= 1'b0; cbm <= '0;
+          st_pend <= 1'b0; pa <= 1'b0; pa0 <= 1'b0; pb <= 1'b0; st_wq <= 1'b0; st_fin <= 1'b0; cbm <= '0;
         end else
           busy <= 1'b0;
       end
@@ -1468,6 +1488,11 @@ module otpu_dma
         end
         if (ds_dw) begin
           ds_dw <= 1'b0;
+          if (RQL) ds_dw2 <= 1'b1;
+          else ds_dsd <= 1'b1;
+        end
+        if (ds_dw2) begin
+          ds_dw2 <= 1'b0;
           ds_dsd <= 1'b1;
         end
         if (ds_dsd) begin
@@ -1508,6 +1533,11 @@ module otpu_dma
         end
         if (ds_fx) begin
           ds_fx <= 1'b0;
+          if (RQL) ds_fx2 <= 1'b1;
+          else ds_run <= 1'b1;
+        end
+        if (ds_fx2) begin
+          ds_fx2 <= 1'b0;
           ds_run <= 1'b1;
         end
         if (ds_take) begin
@@ -1680,11 +1710,15 @@ module otpu_dma
                 cbm[pp * W + l] <= pm[l];
               end
           end
-          st_pend <= pa;
-          pp <= ppa;
-          pm <= pma;
-          pl <= pla;
-          t_rq <= t_rdata;
+          st_pend <= RQL ? pb : pa;
+          pp <= RQL ? ppb : ppa;
+          pm <= RQL ? pmb : pma;
+          pl <= RQL ? plb : pla;
+          t_rq <= t_rc;
+          pb <= RQL && pa;
+          ppb <= ppa;
+          pmb <= pma;
+          plb <= pla;
           pa0 <= st_rd;
           ppa0 <= pos_of(sw);
           pma0 <= sm;
@@ -1693,7 +1727,7 @@ module otpu_dma
           ppa <= ppa0;
           pma <= pma0;
           pla <= pla0;
-          if (st_pend && !pa && !pa0 && !sl_nz) begin     // the last chunk goes into the buffer
+          if (st_pend && !pa && !pa0 && !(RQL && pb) && !sl_nz) begin   // the last chunk goes into the buffer
             st_pend <= 1'b0;
             st_fin <= 1'b1;
           end

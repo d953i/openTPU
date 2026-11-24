@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = Path(os.environ.get("HBMCH_OUT", ROOT / "build" / "hbmch"))
 TB = ROOT / "sim" / "verilator"
 SRC = [ROOT / "rtl" / "shell" / "otpu_afifo.sv", ROOT / "rtl" / "shell" / "otpu_mem_ch.sv",
+       ROOT / "rtl" / "mem" / "otpu_axi_rs.sv",       # (otpu_rs: the NP 2 pair's W rings)
        ROOT / "rtl" / "mem" / "otpu_hbm_ch.sv", TB / "otpu_hbm_model.sv", TB / "tb_hbmch.sv"]
 JOBS = os.environ.get("HBMCH_JOBS", "4")      # C++ compile jobs per build
 PAR = int(os.environ.get("HBMCH_PAR", "4"))   # simulations at once
@@ -60,6 +61,15 @@ BUILDS = {
     "bcn5": dict(RHB=1, WPOST=1, N=5, WH=1, ARD=32, XSW=11),
     "bcn5c": dict(RHB=1, WPOST=1, N=5, WH=1, ARD=32, XSW=11, CPY=1),
     "bcn2c": dict(RHB=1, WPOST=1, N=2, WH=1, ARD=32, XSW=11, CPY=1),
+    # two memory ports in lockstep (NP 2, otpu_hbm_np): plain, half beats, the SQRL FK35's bridge
+    # (RHB, WPOST, ARD 32, XSW 11, N 5 across its SLR, W at half width) and the FK33's (N 0)
+    "np2": dict(NP=2),
+    "np2hb": dict(NP=2, RHB=1, WPOST=1, WHB=1),
+    "np2fk": dict(NP=2, RHB=1, WPOST=1, N=5, WH=1, ARD=32, XSW=11),
+    "np2fk0": dict(NP=2, RHB=1, WPOST=1, ARD=32, XSW=11),
+    "np2n8f": dict(NP=2, N=8),
+    "np2r32": dict(NP=2, RHB=1, WPOST=1, N=5, WH=1, ARD=32, XSW=11, RDD=32),   # the deskew credits binding
+    "np2fkr": dict(NP=2, RHB=1, WPOST=1, N=5, WH=1, ARD=32, XSW=11, RCD=128),  # the FK35 build's (128 reads in flight)
 }
 
 SCEN = {
@@ -183,6 +193,20 @@ BCF = ["default", "seed2", "small", "hazard", "partial", "rgap", "rgapmix", "slo
        "postcred", "hreset", "hresetp", "drainedge", "drainedge2"]
 FUNC += [(b, s) for b in ("bcn5c", "bcn2c") for s in BCF]
 FUNC += [("bcn5", s) for s in ["default", "areset", "hreset", "postreset"]]
+NPF = ["default", "seed2", "small", "hazard", "hazardlat", "partial", "nogaps", "stall", "lowbw", "rgap",
+       "rgapmix", "jitter", "fastcore", "slowcore", "mw0", "areset", "aresetrep", "aresetlat", "aresetshort",
+       "skew", "seqrd", "seqwr", "seqmix", "seqrand", "seqrand2", "credstress", "wlead", "wleadp", "post30",
+       "post100", "postmix", "postslot", "postseq", "postseq2", "postreset", "postresetl", "postcred",
+       "hreset", "hresetp", "hresetl", "drainedge", "drainedge2"]
+FUNC += [("np2", s) for s in NPF + [f"s{i}" for i in range(20, 24)]]
+FUNC += [("np2hb", s) for s in NPF + [f"s{i}" for i in range(24, 28)]]
+FUNC += [("np2fk", s) for s in NPF + ["postwide"] + [f"s{i}" for i in range(28, 36)]]
+FUNC += [("np2fk0", s) for s in ["default", "small", "hazard", "partial", "rgap", "areset", "seqmix", "post30",
+                                 "post100", "postwide", "postreset", "hreset", "hresetp", "drainedge"]]
+FUNC += [("np2fkr", s) for s in NPF + ["postwide"] + [f"s{i}" for i in range(20, 36)]]
+FUNC += [("np2r32", s) for s in ["default", "jitter", "rgap", "rgapmix", "lowbw", "seqrd", "post100", "postseq", "postcred", "areset", "hreset", "hresetp"]]
+FUNC += [("np2n8f", s) for s in ["default", "small", "partial", "seqwr", "seqmix", "areset", "post30",
+                                 "postreset", "hreset"]]
 
 # throughput: sequential 32-beat runs, the master keeping 128 reads in flight (otpu_native_dram RD)
 # and never stalling; the bar: the model's R channel busy >= 95% of its cycles (14.4 GB/s at
@@ -281,15 +305,15 @@ MUT = [
      [("= a_crst ? '0 : (WAW'(WDD) - wd_wused) >> WHB;", "= a_crst ? '0 : (WAW'(WDD + 1) - wd_wused) >> WHB;")],
      ["wlead", "seqwr", "nogaps"]),
     ("W: AXI beats of a native beat in reverse order", "cb128",
-     [("assign wp_bd   = wp_d[wp_q * 256 +: 256];", "assign wp_bd   = wp_d[(K - 1 - wp_q) * 256 +: 256];")],
+     [("assign wp_bd   = wp_d[wp_q * AXD +: AXD];", "assign wp_bd   = wp_d[(K - 1 - wp_q) * AXD +: AXD];")],
      ["default"]),
     ("W: strobes all set (partial writes clobber)", "cb128",
-     [("assign wp_bm   = wp_m[wp_q * 32 +: 32];", "assign wp_bm   = '1;")], ["partial", "default"]),
+     [("assign wp_bm   = wp_m[wp_q * AXS +: AXS];", "assign wp_bm   = '1;")], ["partial", "default"]),
     ("W: strobes of the wrong AXI beat", "cb128",
-     [("assign wp_bm   = wp_m[wp_q * 32 +: 32];", "assign wp_bm   = wp_m[0 +: 32];")], ["partial", "default"]),
+     [("assign wp_bm   = wp_m[wp_q * AXS +: AXS];", "assign wp_bm   = wp_m[0 +: AXS];")], ["partial", "default"]),
     ("W: a beat's halves joined the wrong way round (WH)", "n8",
-     [("assign wf_wd = {w_d[16:1], w_lo[15:0], w_d[144:17], w_lo[143:16]};",
-       "assign wf_wd = {w_lo[15:0], w_d[16:1], w_lo[143:16], w_d[144:17]};")], ["default", "partial"]),
+     [("assign wf_wd = {w_d[HS:1], w_lo[HS-1:0], w_d[H+HS:HS+1], w_lo[H+HS-1:HS]};",
+       "assign wf_wd = {w_lo[HS-1:0], w_d[HS:1], w_lo[H+HS-1:HS], w_d[H+HS:HS+1]};")], ["default", "partial"]),
     ("R: AXI beats into the wrong quarters", "cb128",
      [("assign rd_wv[q] = r_v && !s_post && (s_q & KW'(NL - 1)) == KW'(q) && !a_rs2;",
        "assign rd_wv[q] = r_v && !s_post && (s_q & KW'(NL - 1)) == KW'(NL - 1 - q) && !a_rs2;")], ["default"]),
@@ -343,14 +367,15 @@ MUT = [
      ["aresetlat", "aresetrep", "areset", "aresetshort"], "missed"),
     # half beats (RHB / WHB)
     ("RHB: a beat's low half with lane 1's second entry not yet in u_rd", "hb",
-     [("rd_ru[0] >= RLW'(2) && rd_ru[1] >= RLW'(2);", "rd_ru[0] >= RLW'(2);")], ["rgap", "rgapmix", "default"]),
+     [("for (int q = 0; q < NL; q++) if (rd_ru[q] < RLW'(2)) rd_two = 1'b0;",
+       "if (rd_ru[0] < RLW'(2)) rd_two = 1'b0;")], ["rgap", "rgapmix", "default"]),
     ("RHB: a low half started in the core's reset (rst not tested, a_crst a cycle late)", "hb",
      [("assign rd_lo  = !rh_p && !rst && !a_crst", "assign rd_lo  = !rh_p && !a_crst")],
      ["aresetshort", "drainedge", "drainedge2"]),
     # (unseen: a core reset raises a_crst before the hold's a_hs2, and with the HBM's reset alone
     # the master resets with the core side, so the beat a hold splits is dropped whole either way)
     ("RHB: a low half started in the hold (a_hs2 not tested)", "hb",
-     [("!a_crst && !a_hs2 && rd_ru[0]", "!a_crst && rd_ru[0]")], ["hreset", "hresetp", "hresetl"], "missed"),
+     [("!a_crst && !a_hs2 && rd_two", "!a_crst && rd_two")], ["hreset", "hresetp", "hresetl"], "missed"),
     ("RHB: the high half held back by the core's reset", "hb",
      [("assign rd_pop = rd_lo || rh_p;", "assign rd_pop = rd_lo || (rh_p && !rst);")],
      ["areset", "aresetshort", "drainedge", "drainedge2"]),
@@ -374,10 +399,10 @@ MUT = [
      [("assign wd_wd = {wd_h, n_wmask[CB/2-1:0], n_wdata[CB*4-1:0]};",
        "assign wd_wd = {!wd_h, n_wmask[CB/2-1:0], n_wdata[CB*4-1:0]};")], ["default"]),
     ("WHB: the halves' AXI beats in reverse order", "hb",
-     [("assign wp_bd   = wp_d[wp_q * 256 +: 256];", "assign wp_bd   = wp_d[(KP - 1 - wp_q) * 256 +: 256];")],
+     [("assign wp_bd   = wp_d[wp_q * AXD +: AXD];", "assign wp_bd   = wp_d[(KP - 1 - wp_q) * AXD +: AXD];")],
      ["default"]),
     ("WHB: a half's strobes all set", "hb",
-     [("assign wp_bm   = wp_m[wp_q * 32 +: 32];", "assign wp_bm   = '1;")], ["partial", "default"]),
+     [("assign wp_bm   = wp_m[wp_q * AXS +: AXS];", "assign wp_bm   = '1;")], ["partial", "default"]),
     ("reset: the core's request not kept up until its hold is seen (a short reset)", "cb128",
      [("a_req <= rst || (a_req && !a_hs2);", "a_req <= rst;")], ["aresetshort"]),
     ("reset: the core side leaves reset before the hold is over", "cb128",

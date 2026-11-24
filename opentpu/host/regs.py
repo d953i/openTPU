@@ -143,6 +143,12 @@ CAP2_QONCE = 1 << 24
 # CAPS2 bit25: MM SPL, a split's terms as one MM (otpu_mxu SPL, docs/isa.md "Split terms";
 # Config.SPLMM). Clear on every bitstream before it.
 CAP2_SPLMM = 1 << 25
+# CAPS2 bit26: each memory channel on two ports of the memory, its bytes interleaved at 32 (the
+# SQRL FK's two HBM ports a channel, otpu_hbm_ch NP 2; otpu_board CH_ILV): channel j's byte o is
+# the card's j x channel_bytes + (o >> 5 & 1) x channel_bytes / 2 + (o >> 6) x 32 + o % 32, so the
+# host's DMA into a channel goes through that layout (opentpu.host.board.interleave_ports).
+# Clear on every bitstream before it.
+CAP2_CHILV = 1 << 26
 # X2 window, docs/x2_link.md (otpu_ctrl's mux, not
 # otpu_link_pkg's old A_* map). X2_SEQ and COLL_STATUS / WD are the hub's additions.
 R_X2_CARD, R_X2_CTRL, R_X2_INFO, R_X2_SEQ = 0x300, 0x304, 0x308, 0x30C
@@ -171,12 +177,13 @@ def caps2(v: int | None) -> dict:
     no split LO flag (splitq False), no one-sided ST16 (st16s False), no QACT HL (qhl
     False), no QST HL (qsthl False), no SIGMOID / SILU (vsig False), no VOP MAC (vmac False), no
     OUTER decay one on MAC's (outer1 False), no QACT ST / LDA (qonce False), no MM SPL (splmm
-    False)."""
+    False), channels on one memory port each (chilv False)."""
     if v is None:
         return {"gather": True, "outer": True, "dstep2": False, "se_own": False, "bmc": False,
                 "kt": False, "bhw": 0, "icache": False, "st16": "", "xcard": False,
                 "fsum": False, "splitq": False, "st16s": False, "qhl": False, "qsthl": False,
-                "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False}
+                "vsig": False, "vmac": False, "outer1": False, "qonce": False, "splmm": False,
+                "chilv": False}
     st = v >> CAP2_ST16_SHIFT & CAP2_ST16_MASK
     return {"gather": bool(v & CAP2_GATHER), "outer": not v & CAP2_NO_OUTER,
             "dstep2": bool(v & CAP2_DSTEP2), "se_own": bool(v & CAP2_SE_OWN),
@@ -188,7 +195,7 @@ def caps2(v: int | None) -> dict:
             "qhl": bool(v & CAP2_QHL), "qsthl": bool(v & CAP2_QSTHL),
             "vsig": bool(v & CAP2_VSIG), "vmac": bool(v & CAP2_VMAC),
             "outer1": bool(v & CAP2_OUTER1), "qonce": bool(v & CAP2_QONCE),
-            "splmm": bool(v & CAP2_SPLMM)}
+            "splmm": bool(v & CAP2_SPLMM), "chilv": bool(v & CAP2_CHILV)}
 
 
 # ---- version 4: the configuration (otpu_ctrl CFG_*; docs/targets.md)

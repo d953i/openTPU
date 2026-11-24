@@ -257,6 +257,68 @@ def channel_map(info: dict | None) -> tuple[int, ...]:
     return tuple(j * c["channel_bytes"] for j in range(c["S"] * c["channels"]))
 
 
+def chilv_split(off: int, n: int, ch_bytes: int) -> tuple[int, int, int]:
+    """CAPS2 bit26 (a channel on two memory ports, its bytes interleaved at 32: regs.CAP2_CHILV):
+    the channel's bytes [off, off + n) widened to whole 128-byte groups -> (o0, its port-0 card offset
+    in the channel's window o0 / 2, the port-1 one ch_bytes / 2 + o0 / 2); each port holds n' / 2
+    bytes there, of n' = the widened length."""
+    o0 = off // 128 * 128
+    return o0, o0 // 2, ch_bytes // 2 + o0 // 2
+
+
+def chilv_card(o: int, ch_bytes: int) -> int:
+    """CAPS2 bit26: the card offset, in the channel's window, of the channel's byte o."""
+    return (o >> 5 & 1) * (ch_bytes // 2) + (o >> 6) * 32 + o % 32
+
+
+def interleave_ports(t, ch_bytes: int) -> None:
+    """CAPS2 bit26: transport t's mem_write / mem_read take the channels' own byte order from here
+    on (the accelerator's; Board's channel images), each call two DMA calls at the card's layout
+    (chilv_split: the 32-byte pieces of each 64 alternating between the channel's two halves). A
+    range off the 128-byte grid is widened, its edge groups read and merged. Idempotent."""
+    if getattr(t, "_chilv", None) == ch_bytes:
+        return
+    if getattr(t, "_chilv", None) is not None:
+        raise ValueError(f"interleave_ports: the transport interleaves {t._chilv}-byte channels already")
+    w0, r0 = t.mem_write, t.mem_read             # the card's order (bound to the transport)
+    half = ch_bytes // 2
+
+    def mem_read(ch: int, off: int, n: int, out: np.ndarray | None = None) -> np.ndarray:
+        buf = np.empty(n, np.uint8) if out is None else out
+        if n == 0:
+            return buf
+        o0, a0, a1 = chilv_split(off, n, ch_bytes)
+        m = -(-(off + n) // 128) * 128 - o0
+        g = np.empty((m // 64, 2, 32), np.uint8)
+        g[:, 0, :] = r0(ch, a0, m // 2).reshape(-1, 32)
+        g[:, 1, :] = r0(ch, a1, m // 2).reshape(-1, 32)
+        flat = buf.reshape(-1).view(np.uint8)
+        flat[:n] = g.reshape(-1)[off - o0:off - o0 + n]
+        return buf
+
+    def mem_write(ch: int, off: int, data: np.ndarray) -> None:
+        a = np.ascontiguousarray(data, np.uint8).reshape(-1)
+        n = len(a)
+        if n == 0:
+            return
+        o0, a0, a1 = chilv_split(off, n, ch_bytes)
+        o1 = -(-(off + n) // 128) * 128
+        if (o0, o1) != (off, off + n):           # (the edge groups: read, merge)
+            buf = np.empty(o1 - o0, np.uint8)
+            buf[:128] = mem_read(ch, o0, 128)
+            if o1 - o0 > 128:
+                buf[-128:] = mem_read(ch, o1 - 128, 128)
+            buf[off - o0:off - o0 + n] = a
+            a = buf
+        g = a.reshape(-1, 2, 32)
+        w0(ch, a0, np.ascontiguousarray(g[:, 0, :]).reshape(-1))
+        w0(ch, a1, np.ascontiguousarray(g[:, 1, :]).reshape(-1))
+
+    t.mem_write, t.mem_read = mem_write, mem_read
+    t._chilv = ch_bytes
+    t._chilv_half = half
+
+
 # ------------------------------------------------------------------------------ transports
 def _readinto(fd: int, mv: memoryview, off: int) -> int:
     """A synchronous read at `off` straight into `mv`. Not preadv: vectored reads reach the
@@ -564,8 +626,9 @@ def open_transport(dev: str | None = None, dma: bool = True, target: str | None 
     raise ValueError(f"no transport for {dev!r} (/dev/xdmaN or another path)")
 
 
-def sim_sources(bcuwg: bool = False) -> tuple[str, list[Path]]:
-    """The board model's top (tb_board; bcuwg: tb_bcuwg, the BCU1525 at WG 8's bridges, DIMM pairs and hmuxes around it) and its sources
+def sim_sources(bcuwg: bool = False, sqrlfk: bool = False) -> tuple[str, list[Path]]:
+    """The board model's top (tb_board; bcuwg: tb_bcuwg, the BCU1525 at WG 8's bridges, DIMM pairs and hmuxes around it;
+    sqrlfk: tb_sqrlfk, the SQRL FK33 / FK35's bridges on models of their HBM ports) and its sources
     (SimTransport's build; test_wg_rtl's port-width lint)."""
     from opentpu import rtlsim
     root = Path(__file__).resolve().parents[2]
@@ -575,7 +638,10 @@ def sim_sources(bcuwg: bool = False) -> tuple[str, list[Path]]:
     srcs += [rtlsim.TB / "otpu_native_mem.sv", shell / "otpu_afifo.sv", shell / "otpu_mem_ch.sv",
              shell / "otpu_axi_split2.sv",      # otpu_native_reg (tb_board NREG)
              rtlsim.TB / "otpu_chmem.sv", rtlsim.TB / "otpu_ldn_model.sv"]
-    top = "tb_bcuwg" if bcuwg else "tb_board"
+    top = "tb_bcuwg" if bcuwg else "tb_sqrlfk" if sqrlfk else "tb_board"
+    if sqrlfk:
+        srcs += [root / "rtl/mem" / f for f in ("otpu_hbm_ch.sv", "otpu_axi_rs.sv")]
+        srcs += [root / "rtl/boards/sqrl-fk/otpu_sqrl_fk_sys.sv", rtlsim.TB / "otpu_hbm_model.sv"]
     if bcuwg:
         srcs += [root / "rtl/mem" / f for f in ("otpu_hbm_ch.sv", "otpu_axi_rs.sv")]
         srcs += [root / "rtl/boards/bcu1525" / f for f in ("otpu_mig_pair.sv", "otpu_mig_hmux.sv",
@@ -620,7 +686,7 @@ class SimTransport:
     def __init__(self, ch_bytes: int = 1 << 24, stall: int = 20, seed: int = 1,
                  params: dict | None = None, plusargs: list | None = None,
                  native: bool | str | None = None, target=None,
-                 bcuwg: bool = False, caw: int | None = None):
+                 bcuwg: bool = False, caw: int | None = None, sqrlfk: bool = False):
         from opentpu.target import current, load
         # the target whose build the model is (default the current one): its slices (two
         # channels each), CFG_PLATFORM and CFG_HASH
@@ -636,12 +702,24 @@ class SimTransport:
         if bcuwg and ((self.nch, self.beat) != (8, 128) or self.slices not in (1, 2)):
             raise ValueError(f"bcuwg: {self.target.name} is not one or two slices of 8 channels "
                              f"of 128 bytes")
-        if bcuwg and caw is None:                   # (the target's channels: its build's CAW)
+        # the SQRL FK33 / FK35 at WG 8 (sim/verilator/tb_sqrlfk.sv: otpu_sqrl_fk_sys, the bridges
+        # on models of their HBM ports, channel j an HBM mini-switch's 1 GiB): one slice of 8
+        # channels of 128 bytes
+        self.sqrlfk = sqrlfk
+        # (sqrl-fk35w: 16 channels of 512 MiB on all 32 ports, HNP 2)
+        if sqrlfk and (bcuwg or self.nch not in (8, 16) or self.beat != 128 or self.slices != 1
+                       or (self.nch == 16 and int(pl.get("hbm_ports", 1)) != 2)):
+            raise ValueError(f"sqrlfk: {self.target.name} is not one slice of 8 channels (16 on "
+                             f"two HBM ports each) of 128 bytes")
+        self.wgsys = bcuwg or sqrlfk                # (a WG board's system around otpu_board)
+        if self.wgsys and caw is None:              # (the target's channels: its build's CAW)
             caw = pl["channel_bytes"].bit_length() - 8
         self.caw = caw
-        if caw is not None and not (bcuwg and 22 <= caw <= 26 and ch_bytes <= 1 << caw + 7):
-            raise ValueError(f"caw {caw}: tb_bcuwg's (bcuwg), 22 .. 26, a channel 2^(caw + 7) "
-                             f"bytes from its dense image ({ch_bytes})")
+        lo, hi = (20, 23) if sqrlfk else (22, 26)
+        if caw is not None and not (self.wgsys and lo <= caw <= hi and ch_bytes <= 1 << caw + 7):
+            raise ValueError(f"caw {caw}: tb_bcuwg's (bcuwg) 22 .. 26 or tb_sqrlfk's (sqrlfk) "
+                             f"20 .. 23, a channel 2^(caw + 7) bytes from its dense image "
+                             f"({ch_bytes})")
         if caw is not None:
             ch_bytes = min(ch_bytes, self.DENSE)
         self.ch = [np.zeros(ch_bytes, np.uint8) for _ in range(self.nch * self.slices)]
@@ -771,19 +849,32 @@ class SimTransport:
         return val
 
     @staticmethod
-    def _wrap(srcs: list, p: dict) -> tuple[list, dict]:
+    def _wrap(srcs: list, p: dict, sqrlfk: bool = False) -> tuple[list, dict]:
         """tb_bcuwg's build from tb_board's parameters: S, WORDS, CORE_KHZ and RLY (the far
         bridges' relays) and otpu_bcu_wg_sys's MWAIT, ARD, PRD, CAW, BHW and DMAP tb_bcuwg's (at
         two slices RLY a literal of its 64 bits), the channels the wrapper's own (its native
         ports: MEM_NATIVE, NCH, CB), every other one otpu_board's, given as the wrapper's
         OTPU_BOARD (as make_wg.py gives the bitstream's) in a source before the others; a key
-        otpu_board does not declare is an error (boardmacro.board_macro)."""
+        otpu_board does not declare is an error (boardmacro.board_macro). sqrlfk: tb_sqrlfk's
+        (one slice: WORDS, CORE_KHZ, RLY, MWAIT, ARD and CAW; S, PRD, BHW and DMAP dropped)."""
         import hashlib
         from opentpu import rtlsim
         from . import boardmacro
         p = dict(p)
         tb = {k: p.pop(k) for k in ("S", "WORDS", "CORE_KHZ", "RLY", "MWAIT", "ARD", "PRD",
-                                    "CAW", "BHW", "DMAP") if k in p}
+                                    "CAW", "BHW", "DMAP", "HNP", "RCD") if k in p}
+        if sqrlfk:
+            if tb.pop("S", 1) != 1:                 # (tb_sqrlfk: otpu_sqrl_fk_sys's one slice)
+                raise ValueError("sqrlfk: one slice")
+            if p.get("NCH", 8) != 8:                # (sqrl-fk35w: 16 channels, RLY 64 bits)
+                tb["NCH"] = p["NCH"]
+                if isinstance(tb.get("RLY"), int):
+                    tb["RLY"] = f"{4 * p['NCH']}'h{tb['RLY']:x}"
+        else:
+            tb.pop("HNP", None)
+            tb.pop("RCD", None)
+            for k in ("PRD", "BHW", "DMAP"):
+                tb.pop(k, None)
         if tb.get("S", 1) not in (1, 2):            # (tb_bcuwg: otpu_bcu_wg_sys's one or two)
             raise ValueError("bcuwg: one or two slices")
         if tb.get("S", 1) > 1 and isinstance(tb.get("RLY"), int):   # (4 S NCH bits)
@@ -806,7 +897,7 @@ class SimTransport:
         port-width lint)."""
         from opentpu import rtlsim
         native = rtlsim.MEMORY["NATIVE"] if self.native is None else self.native
-        top, srcs = sim_sources(self.bcuwg)
+        top, srcs = sim_sources(self.bcuwg, self.sqrlfk)
         from opentpu.isasim import board_config
         cfg = board_config()                        # OTPU_MCOLS / OTPU_LANES: the "bitstream"
         # VPU_CL and ULANES as the bitstream builds them (make bit: VPU_CL 2, ULANES 8)
@@ -941,6 +1032,10 @@ class SimTransport:
             p["AW"] = self.target.arch["AW"]
         if self.caw is not None:
             p["CAW"] = self.caw
+        # tb_sqrlfk: the HBM ports a channel as the target builds them (platform hbm_ports; the
+        # params' HNP overrides)
+        if self.sqrlfk:
+            p["HNP"] = int(self.target.platform.get("hbm_ports", 1))
         # and its pairs' bank-half window as the target builds it (otpu_mig_pair BHW: a
         # channel's bytes; Config.BHW the slice's)
         if self.bcuwg and self.target.arch.get("BHW"):
@@ -980,15 +1075,15 @@ class SimTransport:
             QSTHL=p.get("QUANT_QSTHL", 0), VSIG=p.get("VPU_SIG", 0), VMAC=p.get("VPU_MAC", 0),
             OUTER1=p.get("VPU_OUTER1", 0), QONCE=p.get("QONCE", 0),
             SPLMM=p.get("MXU_SPL", 0))
-        if self.bcuwg:
+        if self.wgsys:
             bc = replace(bc, DRAM_BYTES=self.nch << self.caw + 7)
         else:                       # tb_board: the DRAM its otpu_board reports (DRAM_LOG2, 4 GiB
             # unless given: a target of 16 GiB slices hashed its own and was refused,
             # check_hash) and no bank-half window (the DIMM pairs', otpu_mig_pair: tb_bcuwg's)
             bc = replace(bc, BHW=0, DRAM_BYTES=1 << int(p.get("DRAM_LOG2", 32)))
         p.setdefault("ARCH_HASH", "32'h%08x" % arch_hash(bc))
-        if self.bcuwg:
-            srcs, p = self._wrap(srcs, p)
+        if self.wgsys:
+            srcs, p = self._wrap(srcs, p, sqrlfk=True) if self.sqrlfk else self._wrap(srcs, p)
         return top, srcs, p
 
     def flush(self) -> None:
@@ -996,6 +1091,7 @@ class SimTransport:
             return
         from opentpu import rtlsim, simtmp     # (the simulator's: not on the card's path)
         top, srcs, p = self.sim_build()
+        hnp = int(p.get("HNP", 1)) if self.sqrlfk else 1   # (tb_sqrlfk: two port models a channel)
         exe = rtlsim.build(top, srcs, p)
         own = (self.nch, self.beat) != (2, BEAT)   # the WG targets' channels: the native memory model
         with simtmp.tempdir("otpu_board_") as d:
@@ -1011,7 +1107,7 @@ class SimTransport:
             r = rtlsim.run_sim([str(exe), f"+dir={d}", f"+axi_stall={self.stall}",
                                 f"+axi_seed={self.seed}", *self.plusargs,
                                 *(mem_model(self.target)
-                                  if own and not self.bcuwg else [])])
+                                  if own and not self.wgsys else [])])
             out = self.out = r.stdout + r.stderr
             if "DONE" not in out:
                 raise RuntimeError(f"board simulation failed:\n{out[-3000:]}")
@@ -1024,6 +1120,16 @@ class SimTransport:
                 elif line.startswith("DONE"):
                     self.cycles += int(line.split("=")[1])
             for c in range(len(self.ch)):
+                if hnp == 2:            # (each lane's model: its own 32-byte beats, 2 b + l)
+                    lanes = [np.fromfile(d / f"ch{c}_l{l}_out.bin", np.uint8) for l in (0, 1)]
+                    m = lanes[0].reshape(-1, 2, 32).copy()
+                    m[:, 1, :] = lanes[1].reshape(-1, 2, 32)[:, 1, :]
+                    self.ch[c] = m.reshape(-1)
+                    if self.caw is not None:
+                        his = [self._hi_parse((d / f"ch{c}_l{l}_hi_out.txt").read_text())
+                               for l in (0, 1)]
+                        self.hi[c] = {b: v for l in (0, 1) for b, v in his[l].items() if b % 2 == l}
+                    continue
                 self.ch[c] = np.fromfile(d / f"ch{c}_out.bin", np.uint8)
                 if self.caw is not None:
                     self.hi[c] = self._hi_parse((d / f"ch{c}_hi_out.txt").read_text())
@@ -1285,6 +1391,9 @@ class Board:
             d["cfg"] = R.cfg(self.t.reg_read_many(list(R.CFG_REGS)))
             if hasattr(self.t, "bases"):            # the DMA's channel addresses
                 self.t.bases = channel_map(d)
+                # each channel on two memory ports (CAPS2 bit26): the DMA's in their layout
+                if d["caps2"]["chilv"]:
+                    interleave_ports(self.t, d["cfg"]["channel_bytes"])
             # the target it is a build of (check_target: the transport's want_target, a WG
             # variant by name, refused on another build)
             t = check_target(d, getattr(self.t, "want_target", None))

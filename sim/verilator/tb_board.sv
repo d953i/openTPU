@@ -108,6 +108,7 @@ module tb_board;
   parameter int TMEM_PMP   = 0;
   parameter int TMEM_PRK   = 0;
   parameter int TMEM_SDM   = -1;
+  parameter int TMEM_RQL   = 0;
   parameter string TMEM_STYLE = "block";
   parameter string IMEM_STYLE = "auto";
   parameter string IMEM_WC_STYLE = "";
@@ -170,7 +171,7 @@ module tb_board;
                .ARCH_HASH(ARCH_HASH), .COLL_GATHER(COLL_GATHER || S > 1), .COLL_PIPE(COLL_PIPE), .XRS(XRS),
                .TMEM_IMPL(TMEM_IMPL),
                .TMEM_NSB(TMEM_NSB), .TMEM_SBP(TMEM_SBP), .TMEM_SBH(TMEM_SBH), .TMEM_RPL(TMEM_RPL),
-               .TMEM_TDP(TMEM_TDP), .TMEM_GST(TMEM_GST), .TMEM_PMP(TMEM_PMP), .TMEM_PRK(TMEM_PRK),
+               .TMEM_TDP(TMEM_TDP), .TMEM_GST(TMEM_GST), .TMEM_PMP(TMEM_PMP), .TMEM_PRK(TMEM_PRK), .TMEM_RQL(TMEM_RQL),
                .TMEM_SDM(TMEM_SDM), .TMEM_STYLE(TMEM_STYLE), .IMEM_STYLE(IMEM_STYLE),
                .MXU_RF_STYLE(MXU_RF_STYLE), .MXU_FIFO_STYLE(MXU_FIFO_STYLE),
                .MXU_RF_ROWS(MXU_RF_ROWS),

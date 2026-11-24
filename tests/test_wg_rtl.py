@@ -74,10 +74,10 @@ def _program(rng, cases, act=_act, matrix=_matrix, cfg=None):
         fmt = FMT[wf]
         x = act(rng, M, KB, D)
         data, rows = matrix(rng, wf, N, KB, k0 + KB, rsc, D)
-        data = Q.group_rows(data, WG, D, fmt, KB * D)
-        rows = Q.group_scales(rows, fmt, (k0 + KB) * D, WG, D, rsc)
+        data = Q.group_rows(data, cfg.WG, D, fmt, KB * D)
+        rows = Q.group_scales(rows, fmt, (k0 + KB) * D, cfg.WG, D, rsc)
         _place(dram, xa, x)
-        _place(dram, wa, Q.hash_rows(data, wa, WG, D) if cfg.CHASH else data)
+        _place(dram, wa, Q.hash_rows(data, wa, cfg.WG, D) if cfg.CHASH else data)
         _place(dram, sa, rows)
         ascale = None
         if post in ("ascale", "both"):          # (the factors, signs and magnitudes mixed)
@@ -89,7 +89,7 @@ def _program(rng, cases, act=_act, matrix=_matrix, cfg=None):
             xa += 1024
         ors = N + 3
         mm = dict(sa=wa, ssa=sa, out=out, n=N, kb=KB, rs=data.shape[1], ors=ors, m=M, ab=0,
-                  srs=rows.shape[1], unit=unit, wf=wf, k0=k0, rsc=rsc, grp=Q.grp_r(fmt, WG),
+                  srs=rows.shape[1], unit=unit, wf=wf, k0=k0, rsc=rsc, grp=Q.grp_r(fmt, cfg.WG),
                   rmax=post in ("rmax", "both"))
         prog += [I.ld(xa, 0, x.size), I.qact(0, M, 0, KB, KB * D), I.mm(**mm)]
         if acc:
@@ -106,8 +106,9 @@ def _check(cases, seed, gen={}, chash=True, cfg=None, program=_program, **kw):
     cfg = cfg or _cfg(CHASH=chash)
     prog, dram = program(np.random.default_rng(seed), cases, cfg=cfg, **gen)
     m = Machine(cfg, [prog], [dram.copy()]).run()
-    drams, tmems, st = rtlsim.run(cfg, [prog], [dram.copy()], uarch=UARCH | kw.pop("uarch", {}),
-                                  **kw)
+    # (the slice's channels: WG of 128-byte beats, P = WG x D)
+    drams, tmems, st = rtlsim.run(cfg, [prog], [dram.copy()],
+                                  uarch=UARCH | {"NCH": cfg.WG} | kw.pop("uarch", {}), **kw)
     bad = np.nonzero(tmems[0] != m.slices[0].tmem)[0]
     assert len(bad) == 0, f"{len(bad)} TMEM words differ, first at {bad[:8]}"
     outs = m.slices[0].tmem[1 << 14:]
@@ -179,6 +180,40 @@ def test_packed_extremes_rtl(have_verilator, wf):
              (wf, 16, 2, 3, 0, True, False, "", False),
              (wf, 24, 3, 8, 0, False, False, "rmax", False)]     # (ties: equal rows' maxima)
     _check(cases, seed=20 + wf, gen=dict(act=_extreme_act, matrix=_extreme_matrix))
+
+
+# WG 16 (the FK35's 32-port plan: MCOLS 16, P = 2 KiB, 16 channels): a group 16 rows int8, 32 4-bit;
+# its Sw 64 / 128 bytes, a chunk's entry 16 / 128 (all four lines of a port A beat). NVFP4 is not
+# built at WG 16 (a chunk's entry would be two beats).
+WG16 = dict(MCOLS=16, WG=16)
+
+
+@pytest.mark.parametrize("wf", [I.W8, I.W4I, I.W4F], ids=["int8", "int4", "fp4"])
+def test_grouped_mm_wg16_rtl(have_verilator, wf):
+    _check(_cases(wf), seed=60 + wf, cfg=_cfg(**WG16))
+
+
+@pytest.mark.parametrize("wf", [I.W8, I.W4F], ids=["int8", "fp4"])
+def test_grouped_rmax_ascale_wg16_rtl(have_verilator, wf):
+    _check(_post_cases(wf), seed=70 + wf, cfg=_cfg(**WG16))
+
+
+@pytest.mark.parametrize("wf", [I.W8, I.W4I, I.W4F], ids=["int8", "int4", "fp4"])
+def test_packed_extremes_wg16_rtl(have_verilator, wf):
+    """The packed PEs at their bound, at WG 16 (test_packed_extremes_rtl's cases)."""
+    cases = [(wf, 32, 5, 1, 0, False, False, "", False),
+             (wf, 32, 4, 2, 2, False, False, "", True),
+             (wf, 48, 3, 9, 1, False, False, "", False),
+             (wf, 32, 2, 3, 0, True, False, "", False),
+             (wf, 48, 3, 8, 0, False, False, "rmax", False)]
+    _check(cases, seed=80 + wf, gen=dict(act=_extreme_act, matrix=_extreme_matrix), cfg=_cfg(**WG16))
+
+
+@pytest.mark.parametrize("stall,chash", [(0, True), (30, True), (30, False)])
+def test_grouped_mm_on_the_native_adapter_wg16_rtl(have_verilator, stall, chash):
+    """WG 16 on the board's memory path: otpu_native_dram's port W over 16 x 128-byte channels."""
+    cases = _cases(I.W8)[:3] + _cases(I.W4F)[:3] + _cases(I.W4I)[:2]
+    _check(cases, seed=91 + stall, cfg=_cfg(CHASH=chash, **WG16), axi=True, stall=stall)
 
 
 def test_rtl_at_groups_is_gall():

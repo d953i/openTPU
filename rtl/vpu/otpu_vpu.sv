@@ -59,6 +59,13 @@
 // cycle), the write buffer's room is decided a cycle further ahead (more slots), and the
 // composites' issue hold looks one step further when the back end steps (hold_n). In stream
 // mode the front issues nothing and en_b is the stream's enable, as before (en_q).
+// FBD 2 (WBUF; the slice's registered TMEM read ports, otpu_slice TMEM_RQL: ta_data and tb_data
+// a cycle after TMEM's): the back end two cycles behind the front instead of one. en_b is en two
+// cycles late, mi2 reaches it through two registers and the read data through the slice's and
+// ta_d / tb_d, the *_b copies are two registers deep; the composites' issue hold looks one tap
+// further for each of the front's two steps the back end has not taken yet (hold_n, hold_n2), and
+// the write buffer has room for one more push in flight (eight slots). Every hold of the front is
+// the back end's two cycles later, so its schedule is again exactly today's.
 //
 // Stream engine (HAS_SE, LANES = 8; docs/stream.md): the VPU is SE's front. A stream (the DMA's
 // DSTEP or STREAM) asks for SE with ss_req: rdy falls, the VOPs queued and in flight finish,
@@ -146,6 +153,7 @@ module otpu_vpu
   // the VPU's writes (the board's: every read port has its own TMEM copy). 0: everything
   // advances on the grant itself.
   parameter bit WBUF  = 0,
+  parameter int FBD   = 1,                            // WBUF: the back end's lag, 1 or 2 cycles (above)
   parameter bit HAS_SE = 1'b0,                        // the stream engine (LANES = 8)
   // the DMA's streams run on it (0: on otpu_se_eng beside the VPU, otpu_slice SE_R > 0; the
   // engine's tail runs the composites alone, in VOP mode always: no grant, ss_act's copies
@@ -396,7 +404,12 @@ module otpu_vpu
 `endif
   // FB: comp runs on en_b, a step behind the front when the back end steps this cycle; its
   // schedule as the front would see it is then a tap further on (hold_n)
-  wire              c_hold_f = (FB && en_b) ? c_hold_n : c_hold;
+  // FBD 2: the back end has not taken the front's steps of the last two cycles (en_b1: en a
+  // cycle late; en_b, two): one tap further for each
+  logic             c_hold_n2, en_b1;
+  wire              c_hold_f = !FB ? c_hold :
+                               (FBD == 2) ? ((en_b && en_b1) ? c_hold_n2 : (en_b || en_b1) ? c_hold_n : c_hold) :
+                               en_b ? c_hold_n : c_hold;
   wire              iss_ok = !(C8 && comp_f(func) && c_hold_f) && iss_thr;
 
   wire is_sum = (func == V_RSUM) || (func == V_RSSQ) || (func == V_RDOT);
@@ -576,8 +589,15 @@ module otpu_vpu
   meta_t mi2_d;
   logic [LANES-1:0][31:0] ta_d, tb_d;
   if (FB) begin : g_fbd
+    // FBD 2: mi2 through one more register (the read data's is the slice's, before ta_data)
+    meta_t mi2_q;
+    if (FBD == 2) begin : g_d2
+      always_ff @(posedge clk) mi2_q <= rst ? '0 : mi2;
+    end else begin : g_d1
+      assign mi2_q = mi2;
+    end
     always_ff @(posedge clk) begin
-      mi2_d <= rst ? '0 : mi2;
+      mi2_d <= rst ? '0 : mi2_q;
       ta_d <= ta_data;
       tb_d <= tb_data;
     end
@@ -1122,13 +1142,14 @@ module otpu_vpu
                    .SIG(VSIG)) u_comp (
       .clk, .rst, .en(en_b), .en_l, .in_v(m0.v && m0d.cf), .in_c(m0d.cc), .in_a(c_ia),
       .in_b(c_ib), .in_m(m0.mask), .in_meta(imeta), .hold(c_hold),
-      .hold_n(c_hold_n),
+      .hold_n(c_hold_n), .hold_n2(c_hold_n2),
       .st_sel(c_sel), .st_a(c_sa), .st_b(c_sb), .st_c(c_sc), .st_e(c_se), .st_y(sy),
       .out_v(c_ov), .out_d(c_od), .out_m(c_om), .out_meta(c_ometa));
     assign c_s0 = c_sel[0];
   end else begin : g_nocomp
     assign c_hold = 1'b0;
     assign c_hold_n = 1'b0;
+    assign c_hold_n2 = 1'b0;
     assign c_ov = 1'b0;
     assign c_s0 = 1'b0;
     assign c_sel = '0;
@@ -1471,6 +1492,7 @@ module otpu_vpu
   logic [LANES-1:0][31:0]   cw_data;
   logic                     done_i, dpend;
   logic                     empty_b;       // an empty instruction began (FB: a cycle late)
+  logic                     empty_p;       // FBD 2: ... in its first register (empty_b's next)
   for (genvar l = 0; l < LANES; l++) begin : g_twa
     assign tw_addr[l] = 32'(tw_a[l]);
   end
@@ -1479,6 +1501,7 @@ module otpu_vpu
     assign en = (SE && ss_act) ? sen : gnt && f_ok;
     assign en_l = {LANES{en}};
     assign en_b = en;
+    assign en_b1 = 1'b0;
     assign wb_e = (tw_en == '0);
     always_ff @(posedge clk) begin
       if (rst) begin
@@ -1502,8 +1525,9 @@ module otpu_vpu
     // has four slots (at most three are used). In stream mode it is the stream's pe (two
     // cycles behind the DMA's, see the header).
     // FB: the back end pushes a cycle after the front's enable, so the room is decided a cycle
-    // further ahead: a push at t + 2 (SE: + 3) on a count < 2 at t, up to four (three) in all
-    localparam int NWQ = FB ? (SE ? 8 : 4) : (SE ? 4 : 2);
+    // further ahead: a push at t + 2 (SE: + 3) on a count < 2 at t, up to four (three) in all.
+    // FBD 2: a cycle further still, one push more in flight: eight slots
+    localparam int NWQ = (FB && FBD == 2) ? 8 : FB ? (SE ? 8 : 4) : (SE ? 4 : 2);
     localparam int WQW = $clog2(NWQ);
     typedef struct packed {
       logic [LANES-1:0]         en;
@@ -1558,7 +1582,11 @@ module otpu_vpu
     // the back end's next enable (FB): en, a cycle late (en_r); in stream mode the stream's,
     // which the front's en is then too (en_q: rhold is low, the front reads nothing) -- either
     // way a flip-flop, so its copies have no logic in front of them. Else en's (en_rd).
-    wire en_bd = !FB ? en_rd : (SE && ss_act) ? en_q : en_r;
+    // FBD 2: en_r through one more register (en_rq) first
+    (* max_fanout = 64 *) logic en_rq;
+    always_ff @(posedge clk) en_rq <= !rst && en_r;
+    assign en_b1 = en_rq;
+    wire en_bd = !FB ? en_rd : (SE && ss_act) ? en_q : (FBD == 2) ? en_rq : en_r;
     for (genvar l = 0; l < LANES; l++) begin : g_enl
       (* keep_hierarchy = "yes" *)
       otpu_delay #(.W(1), .N(1)) u_en (.clk, .en(1'b1), .d(!rst && en_bd), .q(en_l[l]));
@@ -1572,6 +1600,8 @@ module otpu_vpu
     end
 `ifndef SYNTHESIS
     always @(posedge clk) if (rst_seen && en_l != {LANES{en_b}}) $fatal(1, "otpu_vpu: en_l is not en_b");
+    always @(posedge clk)
+      if (!rst && rst_seen && wn_nx > (WQW+1)'(NWQ)) $fatal(1, "otpu_vpu: the write buffer overflows (%0d > %0d)", wn_nx, NWQ);
 `endif
     always_ff @(posedge clk) begin
       if (rst) begin
@@ -1652,9 +1682,10 @@ module otpu_vpu
   // until ss_req falls (ss_gnt falls the next cycle). The DMA fills and streams only after
   // ss_gnt, and drops ss_req after its last O, when the stream's partials, kv and tail have
   // drained. An empty instruction (FSUM's take) leaves the queue at its begin and completes at
-  // empty_b, which FB registers: the cycle between has no done yet, so it counts as busy.
+  // empty_b, which FB registers: the cycle between has no done yet, so it counts as busy
+  // (FBD 2: both cycles between, empty_p).
   if (SE) begin : g_se
-    wire idle = !start && (cq_n == 0) && !busy && !empty_b && !done_i && !dpend && wb_e;
+    wire idle = !start && (cq_n == 0) && !busy && !empty_b && !empty_p && !done_i && !dpend && wb_e;
     assign ss_act_d = SE_SS && ss_req && ss_rq && (ss_act || idle);
     // the inputs through two registers (sen_q, s1_*: the first), as the enable (en_q, en_r)
     (* max_fanout = 32 *) logic sen_q;
@@ -1849,12 +1880,38 @@ module otpu_vpu
   logic          begr_b;                      // a reduction began (empty_b: an empty one)
   wire           beg_c = can_begin && en && !f_wait;
   if (FB) begin : g_bcp
+    // FBD 2: through a first register stage (*_q), then the copies (a reduction's begin blocks the
+    // next begin until it completes, so dst / func / rows / drs below still hold it at begr_b)
+    logic [7:0]    func_q, tag_q;
+    logic [31:0]   imm_q, st_frz_q;
+    logic [15:0]   rows_q, drs_q;
+    logic [AW-1:0] dst_q;
+    logic          od_one_q, od_sc_q, st_c_q, begr_q, begf_q, empty_q;
+    if (FBD == 2) begin : g_q2
+      always_ff @(posedge clk) begin
+        func_q <= func; tag_q <= tag; imm_q <= imm; rows_q <= rows; drs_q <= drs; dst_q <= dst;
+        od_one_q <= od_one; od_sc_q <= od_sc; st_frz_q <= st_frz; st_c_q <= st_c;
+        begr_q <= !rst && beg_c && !h_empty && red_f(hf);
+        begf_q <= !rst && beg_c && !h_empty && h_fs;
+        empty_q <= !rst && beg_c && h_empty;
+      end
+      assign empty_p = empty_q;
+    end else begin : g_q1
+      assign empty_p = 1'b0;
+      assign func_q = func; assign tag_q = tag; assign imm_q = imm; assign rows_q = rows;
+      assign drs_q = drs; assign dst_q = dst; assign od_one_q = od_one; assign od_sc_q = od_sc;
+      assign st_frz_q = st_frz; assign st_c_q = st_c;
+      assign begr_q = beg_c && !h_empty && red_f(hf);
+      assign begf_q = beg_c && !h_empty && h_fs;
+      assign empty_q = beg_c && h_empty;
+    end
     always_ff @(posedge clk) begin
-      func_b <= func; tag_b <= tag; imm_b <= imm; rows_b <= rows; drs_b <= drs; dst_b <= dst;
-      od_one_b <= od_one; od_sc_b <= od_sc; st_frz_b <= st_frz; st_c_b <= st_c;
-      begr_b <= !rst && beg_c && !h_empty && red_f(hf);
-      begf_b <= !rst && beg_c && !h_empty && h_fs;
-      empty_b <= !rst && beg_c && h_empty;
+      func_b <= func_q; tag_b <= tag_q; imm_b <= imm_q; rows_b <= rows_q; drs_b <= drs_q;
+      dst_b <= dst_q; od_one_b <= od_one_q; od_sc_b <= od_sc_q; st_frz_b <= st_frz_q;
+      st_c_b <= st_c_q;
+      begr_b <= !rst && begr_q;
+      begf_b <= !rst && begf_q;
+      empty_b <= !rst && empty_q;
     end
     // (a cycle after the begin: its registers hold the instruction)
     assign wr_row_i = dst;
@@ -1866,6 +1923,7 @@ module otpu_vpu
     assign begr_b = beg_c && !h_empty && red_f(hf);
     assign begf_b = beg_c && !h_empty && h_fs;
     assign empty_b = beg_c && h_empty;
+    assign empty_p = 1'b0;
     assign wr_row_i = AW'(hc.w1);
     assign rdb_i = (hf == V_RDOT) && (hc.w4[15:0] <= 16'(NRB)) && (hc.w5[15:0] == 16'd1);
   end

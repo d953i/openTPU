@@ -142,6 +142,20 @@
 // rows of its SLR, beside the DDR4 controller of its die, and these were most of the aclk paths
 // that failed at 300 MHz.
 //
+// Two ports (NP 2; 1, the default: one port as above; the SQRL FK33 / FK35's, otpu_sqrl_fk_sys HNP 2,
+// CB 128): the channel's AXI side moves two AXI beats a cycle on a pair of the memory's AXI3 ports
+// in lockstep. Both halves and the pipeline work in 512-bit "AXI beats" (two of a native beat:
+// K 2, MAXB 8 native beats a burst, 1 KiB), and otpu_hbm_np, beside the AXI half, sends each
+// such beat's low 256 bits to port 0 and its high ones to port 1, each burst to both at the same
+// offset in its own half of the channel: channel byte o = 128 m + 64 s + 32 l + t (t < 32, AXI
+// beat s of native beat m, port l) is the memory's byte PC x 2^(CAW + log2 CB) + l x 2^(CAW +
+// log2 CB - 1) + 64 m + 32 s + t (bit 5 of the channel's byte address moved to the top of the
+// channel's: the host's DMA window lays a channel's bytes out alike, CAPS2 bit26). On the FK's
+// HBM each port then reads its own pseudo-channel of the mini-switch, two at once. Posted reads go
+// out as 2 writes a beat (p_q one-hot over the halves, p_d 512 bits: otpu_mxu QB 1). u_rd, u_wd
+// and the W FIFO hold the same bytes in half as many entries twice as wide (RHB: u_rd one FIFO
+// of 512-bit halves).
+//
 // Clock-domain crossings (the core half's): every synchronizer carries ASYNC_REG; their
 // constraints are in boards/bcu1525/constraints/otpu_hbm_ch.tcl.
 module otpu_hbm_ch #(
@@ -167,7 +181,9 @@ module otpu_hbm_ch #(
   parameter bit WHB = 1'b0,                // n_wdata / n_wmask in half beats (WPOST)
   parameter int BHW = 0,                   // the bank-half window: the channel's first 2^BHW bytes
                                            // (0: none); reads from 2^(BHW - 1) up skip the hazards
-  parameter bit CPY = 1'b0                 // the core half's aclk fan-outs in copies (otpu_hbm_cs)
+  parameter bit CPY = 1'b0,                // the core half's aclk fan-outs in copies (otpu_hbm_cs)
+  parameter int NP  = 1,                   // the memory's AXI3 ports (1, or 2 in lockstep: CB 128)
+  parameter int RDD = 512                  // NP 2: otpu_hbm_np's R deskew FIFOs (beats a port)
 ) (
   // the accelerator (otpu_native_dram's channel port), core clock
   input  logic            clk,
@@ -187,52 +203,56 @@ module otpu_hbm_ch #(
   output logic [CB*8-1:0] n_rdata,
   output logic [15:0]     n_wdone,         // write beats answered by the HBM, mod 2^16
   output logic            n_err,           // a response the bridge did not expect (sticky)
-  // posted reads' beats (aclk), quarter by quarter, and their count: p_q one-hot (bit q with
-  // p_we, else 0) and p_slot in copies of equal registers, one a lane RAM group (otpu_mxu XPOST:
-  // p_q the quarter RAMs' 0, the remainder's field enables 1; p_slot quarter RAM g's g, the
-  // remainder RAM's 4)
+  // posted reads' beats (aclk), quarter by quarter (NP 2: half by half), and their count: p_q
+  // one-hot (bit q with p_we, else 0) and p_slot in copies of equal registers, one a lane RAM group
+  // (otpu_mxu XPOST: p_q the quarter RAMs' 0, the remainder's field enables 1; p_slot quarter RAM
+  // g's g, the remainder RAM's 4)
   output logic            p_we,
-  output logic [1:0][CB/32-1:0] p_q,
+  output logic [1:0][CB/(32*NP)-1:0] p_q,
   output logic [4:0][XSW-1:0] p_slot,
-  output logic [255:0]    p_d,
+  output logic [256*NP-1:0] p_d,
   output logic [XSW+1:0]  p_cntg,
-  // the HBM's AXI3 port, aclk (ID 0, AxSIZE 32 bytes, INCR: the top ties them)
+  // the HBM's AXI3 ports, aclk (ID 0, AxSIZE 32 bytes, INCR: the top ties them)
   input  logic            aclk,
   input  logic            arst,
   input  logic [5:0]      mwait,           // aclk cycles a burst waits for its next beat (static)
-  output logic            m_awvalid,
-  input  logic            m_awready,
-  output logic [OAW-1:0]  m_awaddr,
-  output logic [3:0]      m_awlen,
-  output logic            m_wvalid,
-  input  logic            m_wready,
-  output logic [255:0]    m_wdata,
-  output logic [31:0]     m_wstrb,
-  output logic            m_wlast,
-  input  logic            m_bvalid,
-  output logic            m_bready,
-  input  logic [1:0]      m_bresp,
-  output logic            m_arvalid,
-  input  logic            m_arready,
-  output logic [OAW-1:0]  m_araddr,
-  output logic [3:0]      m_arlen,
-  input  logic            m_rvalid,
-  output logic            m_rready,
-  input  logic [255:0]    m_rdata,
-  input  logic [1:0]      m_rresp,
-  input  logic            m_rlast,
+  output logic [NP-1:0]   m_awvalid,
+  input  logic [NP-1:0]   m_awready,
+  output logic [NP-1:0][OAW-1:0] m_awaddr,
+  output logic [NP-1:0][3:0] m_awlen,
+  output logic [NP-1:0]   m_wvalid,
+  input  logic [NP-1:0]   m_wready,
+  output logic [NP-1:0][255:0] m_wdata,
+  output logic [NP-1:0][31:0] m_wstrb,
+  output logic [NP-1:0]   m_wlast,
+  input  logic [NP-1:0]   m_bvalid,
+  output logic [NP-1:0]   m_bready,
+  input  logic [NP-1:0][1:0] m_bresp,
+  output logic [NP-1:0]   m_arvalid,
+  input  logic [NP-1:0]   m_arready,
+  output logic [NP-1:0][OAW-1:0] m_araddr,
+  output logic [NP-1:0][3:0] m_arlen,
+  input  logic [NP-1:0]   m_rvalid,
+  output logic [NP-1:0]   m_rready,
+  input  logic [NP-1:0][255:0] m_rdata,
+  input  logic [NP-1:0][1:0] m_rresp,
+  input  logic [NP-1:0]   m_rlast,
   output logic [3:0]      ev,              // aclk pulses: {haz_w, cred_r, aw, ar}
-  output logic [$clog2(16 / (CB / 32)):0] ev_n
+  output logic [$clog2(16 * NP / (CB / 32)):0] ev_n
 );
-  localparam int WS = WH ? 145 : 289;      // W up the pipeline: a half or a whole AXI beat, a flag
+  localparam int AXD = 256 * NP;           // the halves' AXI beat: data bits
+  localparam int AXE = AXD * 9 / 8;        // and with its strobes
+  localparam int WS = WH ? AXE / 2 + 1 : AXE + 1;   // W up the pipeline: a half or a whole AXI beat, a flag
   localparam int FW = CAW + 4 + 1 + WS + 2;  // core half to AXI half: command, W, a free, the request
-  localparam int BW = 257 + 5;             // back: R, the two credits, a write beat, n_err, the hold
+  localparam int BW = AXD + 1 + 5;         // back: R, the two credits, a write beat, n_err, the hold
+  initial if (NP != 1 && (NP != 2 || CB != 128))
+    $fatal(1, "otpu_hbm_ch: NP %0d (1, or 2 at CB 128)", NP);
   logic           a_crst;                  // the core side in reset (tb_hbmch's master reads it)
   logic           c_v, c_we, c_seq, c_post, w_v, rf, rq;
   logic [CAW-1:0] c_a;
   logic [WS-1:0]  w_d;
   logic           r_v, cc, wc, bp, er, hd;
-  logic [255:0]   r_d;
+  logic [AXD-1:0] r_d;
   logic           c_v_a, c_we_a, c_seq_a, c_post_a, w_v_a, rf_a, rq_a;
   logic [CAW-1:0] c_a_a;
   logic [WS-1:0]  w_d_a;
@@ -241,7 +261,7 @@ module otpu_hbm_ch #(
   localparam int WC = CPY ? (WH ? 3 : 1) : 0;
   logic [(WC > 0 ? WC : 1)-1:0][1:0] w_c_a;
   logic           r_v_a, cc_a, wc_a, bp_a, er_a, hd_a;
-  logic [255:0]   r_d_a;
+  logic [AXD-1:0] r_d_a;
 
   // The halves and the pipeline keep their hierarchy through synthesis (KEEP_HIERARCHY; the
   // pipeline DONT_TOUCH too): the floorplan places them by name and the crossings' constraints
@@ -251,7 +271,7 @@ module otpu_hbm_ch #(
   (* keep_hierarchy = "yes" *)
   otpu_hbm_cs #(.CB(CB), .CAW(CAW), .PC(PC), .ARD(ARD), .CQD(CQD), .WDD(WDD), .WPOST(WPOST), .WH(WH),
                 .ACQ(ACQ), .AWD(AWD), .RCD(RCD), .PST(PST), .XSW(XSW), .RHB(RHB), .WHB(WHB),
-                .CPY(CPY)) u_cs (
+                .CPY(CPY), .NP(NP)) u_cs (
     .clk, .rst, .n_cvalid, .n_cready, .n_cwe, .n_caddr, .n_csrc, .n_cslot, .n_wvalid, .n_wready,
     .n_wfree, .n_wdata, .n_wmask, .n_rvalid, .n_rdata, .n_wdone, .n_err, .o_crst(a_crst),
     .aclk, .p_we, .p_q, .p_slot, .p_d, .p_cntg,
@@ -265,14 +285,235 @@ module otpu_hbm_ch #(
     .b_o({r_v, r_d, cc, wc, bp, er, hd}));
   (* keep_hierarchy = "yes" *)
   otpu_hbm_ac #(.CB(CB), .CAW(CAW), .PC(PC), .OAW(OAW), .ARD(ARD), .WOT(WOT), .NBK(NBK), .N(N),
-                .WH(WH), .ACQ(ACQ), .AWD(AWD), .BHW(BHW), .CPY(CPY)) u_ac (
+                .WH(WH), .ACQ(ACQ), .AWD(AWD), .BHW(BHW), .CPY(CPY), .NP(NP)) u_ac (
     .aclk, .arst, .mwait,
     .c_v(c_v_a), .c_we(c_we_a), .c_seq(c_seq_a), .c_post(c_post_a), .c_a(c_a_a), .w_v(w_v_a),
     .w_d(w_d_a), .w_c(w_c_a), .rf(rf_a), .rq(rq_a),
     .r_v(r_v_a), .r_d(r_d_a), .cc(cc_a), .wc(wc_a), .bp(bp_a), .er(er_a), .hd(hd_a),
-    .m_awvalid, .m_awready, .m_awaddr, .m_awlen, .m_wvalid, .m_wready, .m_wdata, .m_wstrb, .m_wlast,
-    .m_bvalid, .m_bready, .m_bresp, .m_arvalid, .m_arready, .m_araddr, .m_arlen,
-    .m_rvalid, .m_rready, .m_rdata, .m_rresp, .m_rlast, .ev, .ev_n);
+    .m_awvalid(x_awvalid), .m_awready(x_awready), .m_awaddr(x_awaddr), .m_awlen(x_awlen),
+    .m_wvalid(x_wvalid), .m_wready(x_wready), .m_wdata(x_wdata), .m_wstrb(x_wstrb), .m_wlast(x_wlast),
+    .m_bvalid(x_bvalid), .m_bready(x_bready), .m_bresp(x_bresp), .m_arvalid(x_arvalid),
+    .m_arready(x_arready), .m_araddr(x_araddr), .m_arlen(x_arlen), .m_rvalid(x_rvalid),
+    .m_rready(x_rready), .m_rdata(x_rdata), .m_rresp(x_rresp), .m_rlast(x_rlast), .ev, .ev_n);
+  // the AXI half's port (x_*: AXD bits a beat): the memory's port itself, or (NP 2) the pair's
+  logic           x_awvalid, x_awready, x_wvalid, x_wready, x_wlast, x_bvalid, x_bready;
+  logic           x_arvalid, x_arready, x_rvalid, x_rready, x_rlast;
+  logic [OAW-1:0] x_awaddr, x_araddr;
+  logic [3:0]     x_awlen, x_arlen;
+  logic [AXD-1:0] x_wdata, x_rdata;
+  logic [AXD/8-1:0] x_wstrb;
+  logic [1:0]     x_bresp, x_rresp;
+  if (NP == 1) begin : g_p1
+    assign m_awvalid = x_awvalid; assign x_awready = m_awready; assign m_awaddr = x_awaddr;
+    assign m_awlen = x_awlen;     assign m_wvalid = x_wvalid;   assign x_wready = m_wready;
+    assign m_wdata = x_wdata;     assign m_wstrb = x_wstrb;     assign m_wlast = x_wlast;
+    assign x_bvalid = m_bvalid;   assign m_bready = x_bready;   assign x_bresp = m_bresp;
+    assign m_arvalid = x_arvalid; assign x_arready = m_arready; assign m_araddr = x_araddr;
+    assign m_arlen = x_arlen;     assign x_rvalid = m_rvalid;   assign m_rready = x_rready;
+    assign x_rdata = m_rdata;     assign x_rresp = m_rresp;     assign x_rlast = m_rlast;
+  end else begin : g_p2
+    (* keep_hierarchy = "yes" *)
+    otpu_hbm_np #(.OAW(OAW), .LBIT(CAW + $clog2(CB) - 1), .RDD(RDD), .PC(PC)) u_np (.aclk, .arst,
+      .s_awvalid(x_awvalid), .s_awready(x_awready), .s_awaddr(x_awaddr), .s_awlen(x_awlen),
+      .s_wvalid(x_wvalid), .s_wready(x_wready), .s_wdata(x_wdata), .s_wstrb(x_wstrb), .s_wlast(x_wlast),
+      .s_bvalid(x_bvalid), .s_bready(x_bready), .s_bresp(x_bresp), .s_arvalid(x_arvalid),
+      .s_arready(x_arready), .s_araddr(x_araddr), .s_arlen(x_arlen), .s_rvalid(x_rvalid),
+      .s_rready(x_rready), .s_rdata(x_rdata), .s_rresp(x_rresp), .s_rlast(x_rlast),
+      .m_awvalid, .m_awready, .m_awaddr, .m_awlen, .m_wvalid, .m_wready, .m_wdata, .m_wstrb, .m_wlast,
+      .m_bvalid, .m_bready, .m_bresp, .m_arvalid, .m_arready, .m_araddr, .m_arlen,
+      .m_rvalid, .m_rready, .m_rdata, .m_rresp, .m_rlast);
+  end
+endmodule
+
+// A channel bridge's pair of memory ports (otpu_hbm_ch NP 2): the AXI half's 512-bit port (s_*: ID
+// 0, INCR, its bursts' beats 512 bits; its R and B taken every cycle) onto two AXI3 256-bit ports
+// (m_*[l]: ID 0, AxSIZE 32 bytes, INCR) in lockstep. Each burst goes to both ports, port l's at
+// the burst's address with bit LBIT set to l (the AXI half's addresses have it clear), as many
+// beats; port l takes bits 256 l .. 256 l + 255 of each W beat (and its strobes), and R beat i of
+// the burst is port 0's beat i and port 1's beat i side by side.
+// AR / AW: a burst is taken (s_arready, from registers) while neither port still holds the last
+// one (ar_v, aw_v) and, a read, the deskew FIFOs have room for its beats (rcr: RDD less the beats
+// issued and not yet paired; r_ok >= 16, a burst's most). W: a two-entry ring a port (otpu_rs),
+// both taking each beat (s_wready: both have room, from their registers). R: each port's beats
+// into a FIFO of its own (RDD entries, block RAM; RREADY 1: the credits keep it from filling),
+// written at its own pointer, read at one pointer for both: a pair goes once both FIFOs hold its
+// beat (r_nz, from registers), out two cycles later (the RAM and its output register) as one s_
+// beat, RLAST port 0's (port 1's must agree), RRESP SLVERR if either port's was not OKAY or the
+// two RLASTs differ. B: a count a port, a B once both have one; BRESP SLVERR once either port's
+// was not OKAY (sticky until arst: the AXI half's n_err is). arst resets it all (the memory's
+// ports with it).
+module otpu_hbm_np #(
+  parameter int OAW = 33,
+  parameter int LBIT = 29,                 // the address bit that picks the port
+  parameter int RDD = 512,                 // the R deskew FIFOs' entries (beats a port)
+  parameter logic [4:0] PC = 5'd0          // (the messages')
+) (
+  input  logic            aclk,
+  input  logic            arst,
+  input  logic            s_awvalid,
+  output logic            s_awready,
+  input  logic [OAW-1:0]  s_awaddr,
+  input  logic [3:0]      s_awlen,
+  input  logic            s_wvalid,
+  output logic            s_wready,
+  input  logic [511:0]    s_wdata,
+  input  logic [63:0]     s_wstrb,
+  input  logic            s_wlast,
+  output logic            s_bvalid,
+  input  logic            s_bready,
+  output logic [1:0]      s_bresp,
+  input  logic            s_arvalid,
+  output logic            s_arready,
+  input  logic [OAW-1:0]  s_araddr,
+  input  logic [3:0]      s_arlen,
+  output logic            s_rvalid,
+  input  logic            s_rready,
+  output logic [511:0]    s_rdata,
+  output logic [1:0]      s_rresp,
+  output logic            s_rlast,
+  output logic [1:0]      m_awvalid,
+  input  logic [1:0]      m_awready,
+  output logic [1:0][OAW-1:0] m_awaddr,
+  output logic [1:0][3:0] m_awlen,
+  output logic [1:0]      m_wvalid,
+  input  logic [1:0]      m_wready,
+  output logic [1:0][255:0] m_wdata,
+  output logic [1:0][31:0] m_wstrb,
+  output logic [1:0]      m_wlast,
+  input  logic [1:0]      m_bvalid,
+  output logic [1:0]      m_bready,
+  input  logic [1:0][1:0] m_bresp,
+  output logic [1:0]      m_arvalid,
+  input  logic [1:0]      m_arready,
+  output logic [1:0][OAW-1:0] m_araddr,
+  output logic [1:0][3:0] m_arlen,
+  input  logic [1:0]      m_rvalid,
+  output logic [1:0]      m_rready,
+  input  logic [1:0][255:0] m_rdata,
+  input  logic [1:0][1:0] m_rresp,
+  input  logic [1:0]      m_rlast
+);
+  localparam int RAW = $clog2(RDD);
+  localparam int CRW = RAW + 1;
+  initial if (RDD != (1 << RAW) || RDD < 32 || LBIT >= OAW)
+    $fatal(1, "otpu_hbm_np: RDD %0d (a power of 2, 32 at least), LBIT %0d (below OAW %0d)", RDD, LBIT, OAW);
+  (* keep = "true" *) logic urq = 1'b1;
+  always_ff @(posedge aclk) urq <= arst;
+
+  // ---- AR: one register for both ports (a valid each), on the deskew FIFOs' credits
+  logic [1:0]     ar_v = '0, aw_v = '0;
+  logic [OAW-1:0] ar_a, aw_a;
+  logic [3:0]     ar_l, aw_l;
+  logic [CRW-1:0] rcr = CRW'(RDD), rcr_n;
+  logic           r_ok = 1'b0, ar_tk, r_rd;
+  assign s_arready = ar_v == '0 && r_ok;
+  assign ar_tk     = s_arvalid && s_arready;
+  assign rcr_n     = rcr - (ar_tk ? CRW'(s_arlen) + 1'b1 : '0) + CRW'(r_rd);
+  always_ff @(posedge aclk) begin
+    if (urq) begin ar_v <= '0; rcr <= CRW'(RDD); r_ok <= 1'b0; end
+    else begin
+      ar_v <= ar_tk ? 2'b11 : ar_v & ~m_arready;
+      rcr  <= rcr_n;
+      r_ok <= rcr_n >= CRW'(16);
+    end
+    if (ar_tk) begin ar_a <= s_araddr; ar_l <= s_arlen; end
+  end
+  // ---- AW
+  logic aw_tk;
+  assign s_awready = aw_v == '0;
+  assign aw_tk     = s_awvalid && s_awready;
+  always_ff @(posedge aclk) begin
+    if (urq) aw_v <= '0;
+    else aw_v <= aw_tk ? 2'b11 : aw_v & ~m_awready;
+    if (aw_tk) begin aw_a <= s_awaddr; aw_l <= s_awlen; end
+  end
+  for (genvar l = 0; l < 2; l++) begin : g_a
+    assign m_arvalid[l] = ar_v[l];
+    assign m_araddr[l]  = ar_a | (OAW'(l) << LBIT);
+    assign m_arlen[l]   = ar_l;
+    assign m_awvalid[l] = aw_v[l];
+    assign m_awaddr[l]  = aw_a | (OAW'(l) << LBIT);
+    assign m_awlen[l]   = aw_l;
+  end
+
+  // ---- W: a ring a port, both taking each beat
+  logic [1:0] w_rdy;
+  assign s_wready = &w_rdy;
+  for (genvar l = 0; l < 2; l++) begin : g_w
+    otpu_rs #(.W(289)) u_w (.clk(aclk), .rst(urq), .s_valid(s_wvalid && s_wready), .s_ready(w_rdy[l]),
+      .s_data({s_wdata[256 * l +: 256], s_wstrb[32 * l +: 32], s_wlast}), .m_valid(m_wvalid[l]),
+      .m_ready(m_wready[l]), .m_data({m_wdata[l], m_wstrb[l], m_wlast[l]}));
+  end
+
+  // ---- B: a count a port; a B to the AXI half once both have one
+  logic [1:0][4:0] b_n = '0;               // (the AXI half has 16 write bursts in flight at most)
+  logic            b_v = 1'b0, b_e = 1'b0, b_go;
+  assign m_bready = 2'b11;
+  assign b_go = b_n[0] != '0 && b_n[1] != '0;
+  always_ff @(posedge aclk)
+    if (urq) begin b_n <= '0; b_v <= 1'b0; b_e <= 1'b0; end
+    else begin
+      for (int l = 0; l < 2; l++) b_n[l] <= b_n[l] + 5'(m_bvalid[l]) - 5'(b_go);
+      b_v <= b_go;
+      if ((m_bvalid[0] && m_bresp[0] != 2'b00) || (m_bvalid[1] && m_bresp[1] != 2'b00)) b_e <= 1'b1;
+    end
+  assign s_bvalid = b_v;
+  assign s_bresp  = b_e ? 2'b10 : 2'b00;
+
+  // ---- R: a FIFO a port (block RAM), read in pairs at one pointer. r_e: a port's entries not yet
+  // paired; r_nz its nonzero flag and r_e1 its "one" flag, from registers (r_rd one LUT on them)
+  assign m_rready = 2'b11;
+  logic [RAW:0]       r_rp = '0;
+  logic [1:0][RAW:0]  r_wp = '0, r_e = '0;
+  logic [1:0]         r_nz = '0, r_e1 = '0;
+  logic [1:0][257:0]  r_q1, r_q2;
+  logic               r_v1 = 1'b0, r_v2 = 1'b0;
+  assign r_rd = &r_nz;
+  for (genvar l = 0; l < 2; l++) begin : g_r
+    (* ram_style = "block" *) logic [257:0] mem [RDD];
+    logic wr;
+    assign wr = m_rvalid[l] && !urq;
+    always_ff @(posedge aclk) begin
+      if (wr) mem[r_wp[l][RAW-1:0]] <= {m_rresp[l] != 2'b00, m_rlast[l], m_rdata[l]};
+      if (r_rd) r_q1[l] <= mem[r_rp[RAW-1:0]];
+      r_q2[l] <= r_q1[l];
+      if (urq) begin r_wp[l] <= '0; r_e[l] <= '0; r_nz[l] <= 1'b0; r_e1[l] <= 1'b0; end
+      else begin
+        r_wp[l] <= r_wp[l] + (RAW + 1)'(wr);
+        r_e[l]  <= r_e[l] + (RAW + 1)'(wr) - (RAW + 1)'(r_rd);
+        r_nz[l] <= wr || (r_nz[l] && !(r_rd && r_e1[l]));
+        r_e1[l] <= wr ? (r_rd ? r_e1[l] : !r_nz[l]) : (r_rd ? r_e[l] == (RAW + 1)'(2) : r_e1[l]);
+      end
+    end
+  end
+  always_ff @(posedge aclk) begin
+    if (urq) begin r_rp <= '0; r_v1 <= 1'b0; r_v2 <= 1'b0; end
+    else begin
+      r_rp <= r_rp + (RAW + 1)'(r_rd);
+      r_v1 <= r_rd;
+      r_v2 <= r_v1;
+    end
+  end
+  assign s_rvalid = r_v2;
+  assign s_rdata  = {r_q2[1][255:0], r_q2[0][255:0]};
+  assign s_rlast  = r_q2[0][256];
+  assign s_rresp  = (r_q2[0][257] || r_q2[1][257] || r_q2[0][256] != r_q2[1][256]) ? 2'b10 : 2'b00;
+
+`ifndef SYNTHESIS
+  always_ff @(posedge aclk) if (!urq) begin
+    for (int l = 0; l < 2; l++) begin
+      if (m_rvalid[l] && r_e[l] - (RAW + 1)'(r_rd) >= (RAW + 1)'(RDD))
+        $error("otpu_hbm_np %0d: port %0d's R into a full deskew FIFO (credits)", PC, l);
+      if (r_nz[l] != (r_e[l] != '0) || r_e1[l] != (r_e[l] == (RAW + 1)'(1)))
+        $error("otpu_hbm_np %0d: port %0d's deskew flags off its count", PC, l);
+      if (m_bvalid[l] && b_n[l] == 5'd31) $error("otpu_hbm_np %0d: port %0d's B count overflows", PC, l);
+    end
+    if (s_rvalid && r_q2[0][256] != r_q2[1][256])
+      $error("otpu_hbm_np %0d: the ports' RLASTs differ", PC);
+    if (rcr > CRW'(RDD)) $error("otpu_hbm_np %0d: deskew credits overrun", PC);
+    if (!s_rready || !s_bready) $error("otpu_hbm_np %0d: R or B held back (the AXI half takes every one)", PC);
+  end
+`endif
 endmodule
 
 // The pipeline between the bridge's halves: N + 1 plain register stages each way (no enable, no
@@ -351,7 +592,8 @@ module otpu_hbm_cs #(
   parameter int XSW = 9,
   parameter bit RHB = 1'b0,
   parameter bit WHB = 1'b0,
-  parameter bit CPY = 1'b0
+  parameter bit CPY = 1'b0,
+  parameter int NP  = 1                    // the AXI half's beat: 256 x NP bits (otpu_hbm_ch NP)
 ) (
   input  logic            clk,
   input  logic            rst,
@@ -373,9 +615,9 @@ module otpu_hbm_cs #(
   output logic            o_crst,
   input  logic            aclk,
   output logic            p_we,
-  output logic [1:0][CB/32-1:0] p_q,
+  output logic [1:0][CB/(32*NP)-1:0] p_q,
   output logic [4:0][XSW-1:0] p_slot,
-  output logic [255:0]    p_d,
+  output logic [256*NP-1:0] p_d,
   output logic [XSW+1:0]  p_cntg,
   // up the pipeline (into stage 0)
   output logic            c_v,
@@ -384,19 +626,22 @@ module otpu_hbm_cs #(
   output logic            c_post,
   output logic [CAW-1:0]  c_a,
   output logic            w_v,
-  output logic [(WH ? 145 : 289)-1:0] w_d,
+  output logic [(WH ? 144 * NP + 1 : 288 * NP + 1)-1:0] w_d,
   output logic            rf,              // a u_rd entry freed
   output logic            rq,              // the core's reset request (aclk)
   // down the pipeline (from stage 0)
   input  logic            r_v,
-  input  logic [255:0]    r_d,
+  input  logic [256*NP-1:0] r_d,
   input  logic            cc,              // a command FIFO entry freed
   input  logic            wc,              // a W FIFO entry freed
   input  logic            bp,              // a write beat answered
   input  logic            er,              // n_err (aclk)
   input  logic            hd               // the hold
 );
-  localparam int K    = CB / 32;
+  localparam int AXD  = 256 * NP;          // an AXI beat's data bits (the halves')
+  localparam int AXS  = AXD / 8;           // its strobes
+  localparam int AXE  = AXD + AXS;
+  localparam int K    = CB * 8 / AXD;      // AXI beats a native beat
   localparam int MAXB = 16 / K;
   localparam int LB   = $clog2(MAXB);
   localparam int KW   = $clog2(K);
@@ -409,12 +654,12 @@ module otpu_hbm_cs #(
   localparam int RLD  = RHB ? 2 * ARD : ARD;  // their entries
   localparam int RLW  = $clog2(RLD) + 1;
   localparam int KP   = WHB ? K / 2 : K;   // AXI beats a u_wd entry
-  localparam int KPW  = $clog2(KP);
-  localparam int WE   = KP * 288 + WHB;    // u_wd's entry: {mask, data} of KP AXI beats (WHB: and
+  localparam int KPW  = KP > 1 ? $clog2(KP) : 1;
+  localparam int WE   = KP * AXE + WHB;    // u_wd's entry: {mask, data} of KP AXI beats (WHB: and
                                            //   its half, 1 the high one, on top)
   initial begin
-    if (K * 32 != CB || (K != 2 && K != 4)) $fatal(1, "otpu_hbm_cs: CB must be 64 or 128");
-    if ((RHB || WHB) && K != 4) $fatal(1, "otpu_hbm_cs: RHB / WHB need CB 128");
+    if (K * AXD != CB * 8 || (K != 2 && K != 4)) $fatal(1, "otpu_hbm_cs: CB must be 64 or 128 (NP 2: 128)");
+    if ((RHB || WHB) && CB != 128) $fatal(1, "otpu_hbm_cs: RHB / WHB need CB 128");
     if (WHB && !WPOST) $fatal(1, "otpu_hbm_cs: WHB needs WPOST");
     if (ARD < 2 * MAXB || ARD != (1 << $clog2(ARD))) $fatal(1, "otpu_hbm_cs: ARD");
     if (PST < 1) $fatal(1, "otpu_hbm_cs: PST >= 1");
@@ -471,7 +716,7 @@ module otpu_hbm_cs #(
   logic [WE-1:0]        wd_wd, wd_rd;
   logic [WAW-1:0]       wd_wused;
   logic [NL-1:0]        rd_wv, rd_wr, rd_rv;
-  logic [NL-1:0][255:0] rd_rd;
+  logic [NL-1:0][AXD-1:0] rd_rd;
   logic [RLW-1:0]       rd_wused;
   logic                 rd_pop;
   // (the crossing FIFOs whole, for otpu_hbm_ch.tcl's cells by name, as the halves above)
@@ -500,8 +745,13 @@ module otpu_hbm_cs #(
   // and the adapter's toggle stays in step across one of 2 cycles or more
   logic [NL-1:0][RLW-1:0] rd_ru;
   logic           rh_p = 1'b0, rd_lo;
+  logic           rd_two;                  // each lane's read side sees two entries
+  always_comb begin
+    rd_two = 1'b1;
+    for (int q = 0; q < NL; q++) if (rd_ru[q] < RLW'(2)) rd_two = 1'b0;
+  end
   if (RHB) begin : g_rlo
-    assign rd_lo  = !rh_p && !rst && !a_crst && !a_hs2 && rd_ru[0] >= RLW'(2) && rd_ru[1] >= RLW'(2);
+    assign rd_lo  = !rh_p && !rst && !a_crst && !a_hs2 && rd_two;
     assign rd_pop = rd_lo || rh_p;
   end else begin : g_rwh
     assign rd_lo  = 1'b0;
@@ -511,7 +761,7 @@ module otpu_hbm_cs #(
   for (genvar q = 0; q < NL; q++) begin : g_rd
     logic [RLW-1:0] wu;
     (* keep_hierarchy = "yes" *)
-    otpu_afifo #(.W(256), .DEPTH(RLD), .RWR(1'b1), .WCP(CPY ? 4 : 1)) u_rd (.wclk(aclk), .wrst(a_hr[q]),
+    otpu_afifo #(.W(AXD), .DEPTH(RLD), .RWR(1'b1), .WCP(CPY ? 4 : 1)) u_rd (.wclk(aclk), .wrst(a_hr[q]),
       .wvalid(rd_wv[q]), .wready(rd_wr[q]), .wdata(r_d), .wslot('0), .wcommit(), .wused(wu), .rclk(clk),
       .rrst(a_hs2), .rvalid(rd_rv[q]), .rready(rd_pop), .rdata(rd_rd[q]), .rused(rd_ru[q]));
     if (q == NL - 1) begin : g_wu
@@ -617,12 +867,12 @@ module otpu_hbm_cs #(
   logic            wp_v = 1'b0, wp_h = 1'b0, wp_take, wp_go, wp_end, wp_ld;
   (* max_fanout = 128 *) logic wp_nb;
   logic [KPW-1:0]  wp_q = '0;
-  logic [KP*256-1:0] wp_d;
-  logic [KP*32-1:0]  wp_m;
-  logic [255:0]    wp_bd;
-  logic [31:0]     wp_bm;
-  assign wp_bd   = wp_d[wp_q * 256 +: 256];
-  assign wp_bm   = wp_m[wp_q * 32 +: 32];
+  logic [KP*AXD-1:0] wp_d;
+  logic [KP*AXS-1:0] wp_m;
+  logic [AXD-1:0]  wp_bd;
+  logic [AXS-1:0]  wp_bm;
+  assign wp_bd   = wp_d[wp_q * AXD +: AXD];
+  assign wp_bm   = wp_m[wp_q * AXS +: AXS];
   assign wp_take = wp_v && !wp_h && w_ok;            // an AXI beat's first part goes
   assign wp_go   = wp_take || (WH && wp_h);
   assign wp_end  = wp_go && wp_q == KPW'(KP - 1) && (!WH || wp_h);
@@ -641,11 +891,12 @@ module otpu_hbm_cs #(
         else begin wp_h <= 1'b0; wp_q <= wp_q + 1'b1; end
       end
     end
-    if (wp_nb) {wp_m, wp_d} <= wd_rd[KP*288-1:0];
+    if (wp_nb) {wp_m, wp_d} <= wd_rd[KP*AXE-1:0];
   end
   assign w_v = wp_go;
   if (WH) begin : g_wh
-    assign w_d = wp_h ? {wp_bd[255:128], wp_bm[31:16], 1'b1} : {wp_bd[127:0], wp_bm[15:0], 1'b0};
+    assign w_d = wp_h ? {wp_bd[AXD-1:AXD/2], wp_bm[AXS-1:AXS/2], 1'b1}
+                      : {wp_bd[AXD/2-1:0], wp_bm[AXS/2-1:0], 1'b0};
   end else begin : g_wf
     assign w_d = {wp_bd, wp_bm, 1'b0};
   end
@@ -671,7 +922,7 @@ module otpu_hbm_cs #(
   logic [PST-1:0]           ps_v = '0;
   logic [PST-1:0][KW-1:0]   ps_q;                  // (stages 0 .. PST - 2: the last's are pl_*)
   logic [PST-1:0][XSW-1:0]  ps_s;
-  logic [PST-1:0][255:0]    ps_d;
+  logic [PST-1:0][AXD-1:0]  ps_d;
   (* dont_touch = "true" *) logic [1:0][K-1:0]   pl_q = '0;
   (* dont_touch = "true" *) logic [4:0][XSW-1:0] pl_s;
   logic                     pi_v;                  // the last stage's inputs
@@ -764,8 +1015,10 @@ module otpu_hbm_ac #(
   parameter int ACQ = 16,
   parameter int AWD = 32,
   parameter int BHW = 0,
-  parameter bit CPY = 1'b0                 // the W FIFO's head address in copies (otpu_sfifo HCP),
+  parameter bit CPY = 1'b0,                // the W FIFO's head address in copies (otpu_sfifo HCP),
                                            // the W join's enables from w_c
+  parameter int NP  = 1                    // the AXI beat: 256 x NP bits (otpu_hbm_ch NP; 2: the
+                                           // addresses of the pair's port 0, otpu_hbm_np)
 ) (
   input  logic            aclk,
   input  logic            arst,
@@ -777,13 +1030,13 @@ module otpu_hbm_ac #(
   input  logic            c_post,
   input  logic [CAW-1:0]  c_a,
   input  logic            w_v,
-  input  logic [(WH ? 145 : 289)-1:0] w_d,
+  input  logic [(WH ? 144 * NP + 1 : 288 * NP + 1)-1:0] w_d,
   input  logic [(CPY ? (WH ? 3 : 1) : 1)-1:0][1:0] w_c,   // CPY: {w_v, w_d[0]} in copies
   input  logic            rf,
   input  logic            rq,
   // down the pipeline (into stage N)
   output logic            r_v,
-  output logic [255:0]    r_d,
+  output logic [256*NP-1:0] r_d,
   output logic            cc,
   output logic            wc,
   output logic            bp,
@@ -796,8 +1049,8 @@ module otpu_hbm_ac #(
   output logic [3:0]      m_awlen,
   output logic            m_wvalid,
   input  logic            m_wready,
-  output logic [255:0]    m_wdata,
-  output logic [31:0]     m_wstrb,
+  output logic [256*NP-1:0] m_wdata,
+  output logic [32*NP-1:0] m_wstrb,
   output logic            m_wlast,
   input  logic            m_bvalid,
   output logic            m_bready,
@@ -808,17 +1061,22 @@ module otpu_hbm_ac #(
   output logic [3:0]      m_arlen,
   input  logic            m_rvalid,
   output logic            m_rready,
-  input  logic [255:0]    m_rdata,
+  input  logic [256*NP-1:0] m_rdata,
   input  logic [1:0]      m_rresp,
   input  logic            m_rlast,
   output logic [3:0]      ev,
-  output logic [$clog2(16 / (CB / 32)):0] ev_n
+  output logic [$clog2(16 * NP / (CB / 32)):0] ev_n
 );
-  localparam int K    = CB / 32;           // AXI beats per native beat
+  localparam int AXD  = 256 * NP;          // an AXI beat's data bits
+  localparam int AXS  = AXD / 8;           // its strobes
+  localparam int AXE  = AXD + AXS;
+  localparam int H    = AXD / 2, HS = AXS / 2;   // (WH: a half's data, strobes)
+  localparam int K    = CB * 8 / AXD;      // AXI beats per native beat
   localparam int MAXB = 16 / K;            // native beats per burst (16 AXI beats)
   localparam int LB   = $clog2(MAXB);      // the block's beat bits
   localparam int KW   = $clog2(K);
   localparam int AB   = $clog2(CB);        // byte bits of a native beat
+  localparam int PB   = AB - $clog2(NP);   // a beat's bits in the address (NP 2: a port's half)
   localparam int PCW  = OAW - CAW - AB;    // PC's bits in the AXI address
   localparam int HZB  = BHW != 0 ? BHW - 1 - AB : 0;     // (BHW: the beat bit from which on)
   localparam int NW   = LB + 1;            // a burst's native beats, 1 .. MAXB
@@ -831,7 +1089,7 @@ module otpu_hbm_ac #(
   localparam int HL   = 2 * (N + 1) + 4 > 16 ? 2 * (N + 1) + 4 : 16;  // the hold's cycles
   localparam int HW   = $clog2(HL + 1);
   initial begin
-    if (K * 32 != CB || (K != 2 && K != 4)) $fatal(1, "otpu_hbm_ac: CB must be 64 or 128");
+    if (K * AXD != CB * 8 || (K != 2 && K != 4)) $fatal(1, "otpu_hbm_ac: CB must be 64 or 128 (NP 2: 128)");
     if (PCW < 0 || PCW < 5 && (PC >> PCW) != 5'd0)
       $fatal(1, "otpu_hbm_ac: CAW + log2(CB) beyond OAW, or PC beyond its OAW - CAW - log2(CB) bits");
     if (ARD < 2 * MAXB || ARD != (1 << $clog2(ARD))) $fatal(1, "otpu_hbm_ac: ARD");
@@ -970,7 +1228,7 @@ module otpu_hbm_ac #(
   logic [CAW-1:0] ar_a;
   logic [NW-1:0]  ar_n;
   assign m_arvalid = ar_v;
-  assign m_araddr  = OAW'({PC, ar_a, AB'(0)});
+  assign m_araddr  = (OAW'(PC) << (CAW + AB)) | (OAW'(ar_a) << PB);
   assign m_arlen   = 4'(ar_n * K - 1);
   always_ff @(posedge aclk) begin
     if (urq) ar_v <= 1'b0;
@@ -1027,7 +1285,7 @@ module otpu_hbm_ac #(
   logic [CAW-1:0] aw_a;
   logic [NW-1:0]  aw_n;
   assign m_awvalid = aw_v;
-  assign m_awaddr  = OAW'({PC, aw_a, AB'(0)});
+  assign m_awaddr  = (OAW'(PC) << (CAW + AB)) | (OAW'(aw_a) << PB);
   assign m_awlen   = 4'(aw_n * K - 1);
   always_ff @(posedge aclk) begin
     if (urq) aw_v <= 1'b0;
@@ -1039,28 +1297,29 @@ module otpu_hbm_ac #(
   // w_lo); an entry popped is a credit back (wc). wd_rused: the native beats all in it, less those
   // the W engine has started on
   logic           wf_wv, wf_wr, wf_rv, wf_rr;
-  logic [287:0]   wf_wd, wf_rd;
+  logic [AXE-1:0] wf_wd, wf_rd;
   logic [KW-1:0]  wf_q = '0;               // the AXI beat of the native beat it takes next
   logic [WAW-1:0] wf_in = '0, wf_ld = '0, wd_rused;
   // CPY: the enables from w_c, stage N's copies of w_v and w_d[0] (at WH copy g for w_lo's half g,
   // copy 2 for the W FIFO's write; B1, bcu1525-x2: stage N's w_v into w_lo's 144 enables and the
   // W FIFO's RAMs' write enables)
   if (WH) begin : g_wj
-    logic [143:0] w_lo;
+    logic [H+HS-1:0] w_lo;                 // the low half: {data, strobes}
     if (CPY) begin : g_c
       always_ff @(posedge aclk)
-        for (int b = 0; b < 144; b++) if (w_c[b / 72][1] && !w_c[b / 72][0]) w_lo[b] <= w_d[b + 1];
+        for (int b = 0; b < H + HS; b++)
+          if (w_c[b / ((H + HS) / 2)][1] && !w_c[b / ((H + HS) / 2)][0]) w_lo[b] <= w_d[b + 1];
       assign wf_wv = w_c[2][1] && w_c[2][0];
     end else begin : g_1
-      always_ff @(posedge aclk) if (w_v && !w_d[0]) w_lo <= w_d[144:1];
+      always_ff @(posedge aclk) if (w_v && !w_d[0]) w_lo <= w_d[H+HS:1];
       assign wf_wv = w_v && w_d[0];
     end
-    assign wf_wd = {w_d[16:1], w_lo[15:0], w_d[144:17], w_lo[143:16]};
+    assign wf_wd = {w_d[HS:1], w_lo[HS-1:0], w_d[H+HS:HS+1], w_lo[H+HS-1:HS]};
   end else begin : g_wjf
     assign wf_wv = CPY ? w_c[0][1] : w_v;
-    assign wf_wd = {w_d[32:1], w_d[288:33]};
+    assign wf_wd = {w_d[AXS:1], w_d[AXE:AXS+1]};
   end
-  otpu_sfifo #(.W(288), .DEPTH(AWD), .RO(1'b1), .HCP(CPY ? 4 : 1)) u_wf (.clk(aclk), .rst(a_hold),
+  otpu_sfifo #(.W(AXE), .DEPTH(AWD), .RO(1'b1), .HCP(CPY ? 4 : 1)) u_wf (.clk(aclk), .rst(a_hold),
     .wvalid(wf_wv), .wready(wf_wr), .wdata(wf_wd), .rvalid(wf_rv), .rready(wf_rr), .rdata(wf_rd));
   always_ff @(posedge aclk) wc <= wf_rr && wf_rv && !a_hold;
   assign wd_rused = wf_in - wf_ld;
@@ -1086,8 +1345,8 @@ module otpu_hbm_ac #(
     .wready(wbn_wr), .wdata(p_n), .rvalid(wbn_rv), .rready(w_nb && !(w_bv && w_left != NW'(1)) && wbn_rv),
     .rdata(wbn_rd));
   assign m_wvalid = w_bv;
-  assign m_wdata  = wf_rd[255:0];
-  assign m_wstrb  = wf_rd[287:256];
+  assign m_wdata  = wf_rd[AXD-1:0];
+  assign m_wstrb  = wf_rd[AXE-1:AXD];
   assign m_wlast  = w_q == KW'(K - 1) && w_left == NW'(1);
   assign wf_rr    = w_bv && m_wready;
   assign w_nb     = !w_bv || (m_wready && w_q == KW'(K - 1));  // the native beat ends (or none)
