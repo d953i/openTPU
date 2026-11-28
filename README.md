@@ -1,4 +1,54 @@
-# openTPU
+# openTPU on the SQRL Forest Kitten FK33 / FK35
+
+This fork runs [openTPU](https://github.com/FeSens/openTPU), an open-source AI accelerator, on the **SQRL Forest
+Kitten FK33 and FK35** PCIe cards (AMD Virtex UltraScale+ HBM, 8 GB of HBM2). It runs Qwen3.5 language models from
+0.8B to 9B parameters on the card, with ready-made images and one script per step from the card to a chat, on
+Windows or Linux, without building anything.
+
+![Qwen3.5 on the FK33](prebuilt/sqrl-fk33/a3/fk33_qwen35.png)
+
+| Decode on the card, 4-bit weights | FK33 | FK35 |
+|:--|--:|--:|
+| Qwen3.5-0.8B | 162.4 tok/s | 197.7 tok/s |
+| Qwen3.5-2B | 122.7 tok/s | 141.1 tok/s |
+| Qwen3.5-4B | 55.7 tok/s | 68.3 tok/s |
+| Qwen3.5-9B | 34.6 tok/s | 35.2 tok/s |
+
+A chat with Qwen3.5-9B runs at about 23 tokens/s on the FK33, with a 171,520-token context; the card also serves it
+to other programs as an OpenAI-compatible API on port 8000.
+
+## Quick start
+
+**[docs/sqrl-fk-quickstart.md](docs/sqrl-fk-quickstart.md)** walks through it for non-programmers. You need the card in a
+physical x16 slot (it works on fewer lanes), a micro-USB cable to the card (its built-in JTAG, for step 1 only), any
+Vivado or the free Vivado Lab Edition (for step 1 only), Python 3.10 or later and about 30 GB of disk.
+
+| Step | Windows (double-click) | Linux (`bash ...` in this folder) |
+|---|---|---|
+| 1. flash the card (once) | `boards\sqrl-fk\windows\1-flash-fk33.cmd` or `1-flash-fk35.cmd` | `boards/sqrl-fk/linux/1-flash-fk33.sh` or `1-flash-fk35.sh` |
+| 2. driver (once) | `boards\sqrl-fk\windows\2-install-driver.cmd` | (in step 3) |
+| 3. Python and models (once) | `boards\sqrl-fk\windows\3-setup.cmd` | `boards/sqrl-fk/linux/2-setup.sh` |
+| 4. check the card | `boards\sqrl-fk\windows\4-selftest.cmd` | `boards/sqrl-fk/linux/3-selftest.sh` |
+| 5. chat | `boards\sqrl-fk\windows\5-chat.cmd` | `boards/sqrl-fk/linux/4-chat.sh` |
+| server on port 8000 | `boards\sqrl-fk\windows\serve.cmd` | `boards/sqrl-fk/linux/serve.sh` |
+| the card's state | `boards\sqrl-fk\windows\monitor.cmd` | `boards/sqrl-fk/linux/monitor.sh` |
+
+Tested on both cards under Windows; the Linux scripts use openTPU's own Linux driver and host and have not yet run
+with an FK card.
+
+| | |
+|---|---|
+| The images | [prebuilt/sqrl-fk33/a3](prebuilt/sqrl-fk33/a3/README.md) (FK33), [prebuilt/sqrl-fk35/r16](prebuilt/sqrl-fk35/r16/README.md) (FK35): bitstreams, flash images, timing, results |
+| The Windows driver | [prebuilt/sqrlfk-windows/2.1](prebuilt/sqrlfk-windows/2.1/README.md) (test-signed `sqrlfk.sys`; source in the SQRL_FK33 repository's `driver/windows`) |
+| Chat and server options | [docs/sqrl-fk-quickstart.md: Chat options](docs/sqrl-fk-quickstart.md#chat-options), [the server on port 8000](docs/sqrl-fk-quickstart.md#the-server-on-port-8000) |
+| The design and building it | [docs/sqrl-fk.md](docs/sqrl-fk.md): one openTPU slice at 225 MHz on 16 HBM ports at 450 MHz; targets `sqrl-fk33`, `sqrl-fk35`; Vivado 2019.2 |
+
+Everything below is upstream openTPU's description: the project, its other cards (Inspur YPCB-00338, BCU1525), the
+ASIC flow and how it all works.
+
+---
+
+# About openTPU (the upstream project)
 
 **An open-source AI accelerator, developed by AI.**
 
@@ -163,18 +213,8 @@ state ([docs/se_engine.md](docs/se_engine.md)), an instruction cache
 
 ### On a SQRL Forest Kitten (FK33 / FK35, Virtex UltraScale+ HBM)
 
-The FK33 (xcvu33p) and FK35 (xcvu35p) carry 8 GB of HBM2 each; one slice at 225 MHz streams its weights from
-16 HBM ports. Ready-made images, a Windows driver and one script per step take you from the card to a chat on
-Windows or Linux without building anything: [docs/sqrl-fk-quickstart.md](docs/sqrl-fk-quickstart.md). Decode on the
-device, 4-bit weights:
-
-| Model | FK33 | FK35 |
-|:--|--:|--:|
-| Qwen3.5-0.8B | 162.4 tok/s | 197.7 tok/s |
-| Qwen3.5-4B | 55.7 tok/s | 68.3 tok/s |
-| Qwen3.5-9B | 34.6 tok/s | 35.2 tok/s |
-
-![Qwen3.5 on the FK33](prebuilt/sqrl-fk33/a3/fk33_qwen35.png)
+This fork's cards: [the top of this page](#opentpu-on-the-sqrl-forest-kitten-fk33--fk35) and
+[docs/sqrl-fk-quickstart.md](docs/sqrl-fk-quickstart.md).
 
 ## How it works
 

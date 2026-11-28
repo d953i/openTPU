@@ -167,7 +167,8 @@ top-p 0.8)
 (`boards/sqrl-fk/host/otpu_fk_run.py`); the full list with the developers' notes: `otpu-chat --help` ([host.md](host.md)
 section 6).
 
-Inside the chat:
+Inside the chat (the full-screen window; `--plain` knows only `/continue`, `/reset` and `/image`, and an empty line
+or Ctrl+Z / Ctrl+D ends it):
 
 | Type | What it does |
 |---|---|
@@ -177,6 +178,8 @@ Inside the chat:
 | `/stats` | the card's memory, the session's totals and the sampling settings |
 | `/think on`, `/think off` | thinking mode on or off |
 | `/quit` (or Ctrl+C) | leave |
+| Esc | stop the reply being written |
+| Ctrl+S | show or hide the side panel (speed, memory, settings) |
 | `/image PATH` | (`--plain`, image models only) a picture with the next message |
 
 ## The server on port 8000

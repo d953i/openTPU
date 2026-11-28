@@ -8,7 +8,8 @@ spawns).
     exclusive, LOCK_NB failing with EWOULDBLOCK as flock does; dropped with the file's last handle;
   - os.pread / os.pwrite (lock files: the holder's pid), os.O_NOFOLLOW / O_CLOEXEC / O_NONBLOCK (0: no such flags),
     os.getuid (0: the run directory's owner checks compare it with st_uid, which Windows reports as 0), os.nice (the
-    background compiles' os.nice(19): the process's priority class lowered);
+    background compiles' os.nice(19): the process's priority class lowered), os.getloadavg (raises OSError: none),
+    socket.MSG_DONTWAIT (one non-blocking recv: otpu-serve's check for a client that hung up);
   - the run directory: OTPU_RUN_DIR defaults to %TEMP%\\otpu (upstream's /tmp/otpu would be the current drive's
     root);
   - os.replace retried for up to ~1 s on PermissionError: a file just written is often opened for a moment by the
@@ -125,6 +126,38 @@ def nice(inc: int) -> int:
     return max(0, inc)
 
 
+def getloadavg():
+    """os.getloadavg on Windows: none there; OSError, as a Unix without one raises, which otpu-serve's host telemetry
+    (opentpu/serve/telemetry.py HostStats) takes as "no load average" (an AttributeError stopped the server)."""
+    raise OSError(errno.ENOSYS, "no load average on Windows")
+
+
+_DONTWAIT = 0x40000000         # an otherwise unused flag bit for socket.MSG_DONTWAIT
+
+
+def _socket_dontwait() -> None:
+    """socket.MSG_DONTWAIT on Windows (otpu-serve's _client_gone peeks with MSG_PEEK | MSG_DONTWAIT; Windows has no
+    such flag, so the request died with an AttributeError): a flag bit recv() takes off and answers by making that one
+    call non-blocking (timeout 0: BlockingIOError when nothing is there, as on Linux), the socket's timeout restored."""
+    import socket
+    if hasattr(socket, "MSG_DONTWAIT"):
+        return
+    socket.MSG_DONTWAIT = _DONTWAIT
+    recv = socket.socket.recv
+
+    def _recv(self, n, flags=0):
+        if flags & _DONTWAIT:
+            t = self.gettimeout()
+            self.settimeout(0.0)
+            try:
+                return recv(self, n, flags & ~_DONTWAIT)
+            finally:
+                self.settimeout(t)
+        return recv(self, n, flags)
+
+    socket.socket.recv = _recv
+
+
 _os_replace = os.replace
 
 
@@ -155,6 +188,9 @@ def apply() -> None:
         os.getuid = lambda: 0
     if not hasattr(os, "nice"):
         os.nice = nice
+    if not hasattr(os, "getloadavg"):
+        os.getloadavg = getloadavg
+    _socket_dontwait()
     os.environ.setdefault("OTPU_RUN_DIR", os.path.join(tempfile.gettempdir(), "otpu"))
 
 
