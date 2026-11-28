@@ -4,6 +4,23 @@ The FK35 (Virtex UltraScale+ HBM xcvu35p-fsvh2104-2-e, 8 GB HBM2) with one WG sl
 channels, each an `otpu_hbm_ch` bridge on two HBM AXI ports, and XDMA at PCIe Gen4 x8: target `targets/sqrl-fk35.toml`,
 architecture hash 0x2DE9DD09, docs/sqrl-fk.md. Built 2026-11-21 with Vivado 2019.2, flashed and tested the same day.
 
+![Qwen3.5 on the FK35](fk35_qwen35.png)
+
+**From the card to a chat, step by step (no programming): [docs/sqrl-fk-quickstart.md](../../../docs/sqrl-fk-quickstart.md).**
+In short, one script per step:
+
+| Step | Windows (double-click) | Linux (`bash ...` in the repository) |
+|---|---|---|
+| 1. flash the card (once) | `boards\sqrl-fk\windows\1-flash-fk35.cmd` | `boards/sqrl-fk/linux/1-flash-fk35.sh` |
+| 2. driver (once) | `boards\sqrl-fk\windows\2-install-driver.cmd` | (in step 3) |
+| 3. Python and models (once) | `boards\sqrl-fk\windows\3-setup.cmd` | `boards/sqrl-fk/linux/2-setup.sh` |
+| 4. check the card | `boards\sqrl-fk\windows\4-selftest.cmd` | `boards/sqrl-fk/linux/3-selftest.sh` |
+| 5. chat | `boards\sqrl-fk\windows\5-chat.cmd` | `boards/sqrl-fk/linux/4-chat.sh` |
+| server for other apps | `boards\sqrl-fk\windows\serve.cmd` | `boards/sqrl-fk/linux/serve.sh` |
+| the card's state | `boards\sqrl-fk\windows\monitor.cmd` | `boards/sqrl-fk/linux/monitor.sh` |
+
+The card needs a physical x16 slot; it runs on as few lanes as the slot wires (x8, x4; tested in an x4-wired slot).
+
 ## Build
 
 | | |
@@ -35,11 +52,12 @@ architecture hash 0x2DE9DD09, docs/sqrl-fk.md. Built 2026-11-21 with Vivado 2019
 
 1. As administrator: `.\fk35_flash.ps1` (in this folder). It disables the card, programs both flashes over the one
    JTAG target that holds a single xcvu35p (`-Target` / `-Dna` to pin it), boots from flash, restarts the card's root
-   port (the new design's BARs) and rescans, booting again over JTAG if Windows misses the card. Vivado 2019.2's
-   hardware manager (`-Vivado`); about 17 minutes.
+   port (the new design's BARs) and rescans, booting again over JTAG if Windows misses the card. any Vivado's
+   hardware manager, the free Lab Edition too (`-Vivado`); about 17 minutes.
 2. Restart the PC fully (not a warm reboot, not sleep) for Gen4: the test PC's slot trained Gen3 x4 after every hot
    retrain and Gen4 x4 only after a full restart.
-3. The host: target `sqrl-fk35`; on Linux `opentpu/host/setup_pcie.sh` binds XDMA (1e24:1533). `otpu-selftest`
+3. The host: target `sqrl-fk35`; on Linux `opentpu/host/setup_pcie.sh` binds XDMA (1e24:1533), on Windows
+   `boards/sqrl-fk/host/otpu-fk.cmd` runs the tools through sqrlfk.sys (docs/sqrl-fk.md "Windows host"). `otpu-selftest`
    reports `sqrl-fk35 ... core 225 MHz, HBM2-1800, build d84db557`.
 
 ## Tested on the board (2026-11-21)

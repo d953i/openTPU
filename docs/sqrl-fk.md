@@ -5,19 +5,26 @@ The SQRL Forest Kitten 33 and 35 share one PCB: a Virtex UltraScale+ HBM FPGA wi
 MT25QU256 configuration flashes (SPI x8) and four green LEDs and an RGB one. No other clock input: everything runs
 from XDMA's 250 MHz `axi_aclk`.
 
+To run models on a card with the prebuilt images (flash, driver, host, chat; Windows and Linux):
+[sqrl-fk-quickstart.md](sqrl-fk-quickstart.md).
+
 | | FK35 | FK33 | FK35 wide (experimental) |
 |---|---|---|---|
 | target | `targets/sqrl-fk35.toml` (platform 4) | `targets/sqrl-fk33.toml` (platform 8) | `targets/sqrl-fk35w.toml` (platform 9) |
 | part | xcvu35p-fsvh2104-2-e, two SLRs | xcvu33p-fsvh2104-2-e, one SLR | xcvu35p |
-| slice | MCOLS 8, WG 8, 8 channels of 1 GiB | as the FK35 | MCOLS 16, WG 16, 16 channels of 512 MiB |
+| slice | MCOLS 8, WG 8, 8 channels of 1 GiB | as the FK35, SE_R 1, MXU result FIFO in block RAM | MCOLS 16, WG 16, 16 channels of 512 MiB |
 | HBM AXI ports | 16 (two a channel) + 8 host | as the FK35 | all 32 (two a channel, the host's shared) |
 | bridges' pipelines (`RLY`) | N 5 (the slice in SLR1, the HBM in SLR0) | N 0 | N 5 |
-| core / uclk | 225 / 450 MHz | 225 / 450 MHz (not built yet) | 225 / 450 MHz (does not route yet) |
-| PCIe | Gen4 x8 | Gen4 x8 | Gen4 x8 |
+| core / uclk | 225 / 450 MHz | 225 / 450 MHz | 225 / 450 MHz (does not route yet) |
+| PCIe | Gen4 x8 | Gen3 x8 | Gen4 x8 |
 
 The FK35 and FK33 build the same design: one WG slice (the `bcu1525-wg` slice: MCOLS 8, WG 8, docs/bcu1525_wg.md)
 on eight channels of 128-byte beats, the WG targets' channel bridges (`rtl/mem/otpu_hbm_ch.sv`) in front of the HBM
-instead of the BCU1525's DDR4 MIGs. The wide target doubles the slice's MXU and its intake ("The wide slice" below).
+instead of the BCU1525's DDR4 MIGs. The FK33's part is half the FK35's, so its target takes three area cuts: one row
+group on the stream engine (`SE_R` 1), the MXU's result FIFO in block RAM (`MXU_RF_STYLE` block) and PCIe Gen3 x8
+(XDMA and its SmartConnect at 256 bits; `make_defines.py` writes the target's `pcie_gen`, `PCIE_GEN=4` in the
+environment builds Gen4). The programs are the same (one arch hash). The wide target doubles the slice's MXU and its
+intake ("The wide slice" below).
 
 | | |
 |---|---|
@@ -174,11 +181,44 @@ takes no typed `string` parameters for it (2019.2 does not elaborate them); the 
 Load `otpu.bit` over JTAG (Vivado's hardware manager) and rescan the PCIe bus, or write the two `.mcs` files to the
 card's flashes. On Linux, `opentpu/host/setup_pcie.sh` binds XDMA to the card (SQRL's 1e24:1533 included). Restart
 the host fully (not a warm reboot) after flashing: the FK35's slot trained Gen3 x4 after every hot retrain and Gen4
-only after a full restart.
+only after a full restart. The card needs a physical x16 slot and trains as many of its 8 lanes as the slot wires (x8,
+x4: an x4-wired x16 slot here); fewer lanes slow the host's transfers, not the card's own runs.
+
+Step scripts for each part, Windows and Linux, are in `boards/sqrl-fk/windows/*.cmd` and `boards/sqrl-fk/linux/*.sh`
+(flash a prebuilt image, the driver, Python and models, the self-test, chat, serve, monitor):
+[sqrl-fk-quickstart.md](sqrl-fk-quickstart.md). `boards/sqrl-fk/scripts/fk_flash.tcl` flashes a prebuilt image with
+Vivado (Lab) 2019.2 on either.
+
+### Windows host
+
+`boards/sqrl-fk/host` runs the host unchanged on Windows, through SQRL's KMDF driver `sqrlfk.sys` (the SQRL_FK33
+repository's `driver/windows`, 2.1 or later) instead of Linux's XDMA devices:
+
+- `sqrlfk.py`: `SqrlFkTransport`, a subclass of `XdmaTransport` over the driver's requests (register reads and
+  writes, register batches, direct DMA of up to 256 MB a request); `--dev` takes a board index, `sqrlfk<n>`,
+  `\\.\SqrlFk<n>` or `/dev/xdma<n>`;
+- `winposix.py`: what the host takes from POSIX (`fcntl.flock` on `LockFileEx`, `os.pread`, `os.nice`, the run
+  directory, `runstate.pid_alive`); `sitecustomize.py` applies it in the processes the tools spawn;
+- `otpu_fk_run.py` (Windows and Linux; `otpu-fk.cmd` on Windows, `boards/sqrl-fk/linux/common.sh`'s `fk` on Linux):
+  installs both on Windows and runs a module, a script, or `chat` / `serve` with a model of `models/` and the largest
+  context that fits the card. `OTPU_TARGET` is the card's target; unset, it is read from the card (CFG_PLATFORM:
+  `sqrl-fk33` or `sqrl-fk35`);
+- `setup_win_python.ps1`: the Python for models, `build\venv-win` (`requirements.txt`; `-Model Qwen3.5-0.8B,Qwen3.5-9B`
+  also downloads those checkpoints into `models/`). Without it `otpu-fk.cmd` uses the Python 3.13 of AMD's 2025.2
+  tools, enough for the selftest without models.
+
+```
+boards\sqrl-fk\host\otpu-fk.cmd -m opentpu.host.selftest --dev sqrlfk0 --model qwen35
+boards\sqrl-fk\host\otpu-fk.cmd -m opentpu.host.smi --dev sqrlfk0
+boards\sqrl-fk\host\otpu-fk.cmd chat Qwen3.5-9B --wformat fp4
+```
+
+The tools open the device as an administrator only (the driver's access rule): run them in an administrator terminal
+(the step scripts ask for it).
 
 ## Verification
 
-- `tests/test_sqrlfk_board.py`: the targets; the FK33 is the FK35's design; both drive two HBM ports a channel; the
+- `tests/test_sqrlfk_board.py`: the targets; the FK33 is the FK35's design but for its area cuts; both drive two HBM ports a channel; the
   top lints in Verilator against the block design's ports (`boards/sqrl-fk/sim/otpu_bd_wrapper_stub.sv`, checked
   against 2019.2's generated wrapper) and the HBM IP's (`hbm_0_stub.sv`) at one and two ports a channel; tiny Qwen3
   (int8) and Qwen3.5 (fp4) images run bit for bit against the ISA simulator on the board model (otpu_sqrl_fk_sys
@@ -199,7 +239,17 @@ only after a full restart.
   (bit for bit): decode 1.34 / 1.09 Mcycles a token (one port: 1.53 / 1.18), prefill 0.83 / 0.69. The host's DMA,
   split into two calls a transfer and a gather copy, measured 1.63 GB/s host->card and 2.10 card->host (one port: 2.44
   / 5.31).
-- FK33: synthesis only. At 79% of the xcvu33p's LUTs its implementation did not route at 450 MHz (congestion).
+- FK33 (Vivado 2019.2, core 225 / uclk 450 MHz, `AltSpreadLogic_high`, 2026-11-27; prebuilt/sqrl-fk33/a3). The FK35's
+  design unchanged is 373k LUTs at synthesis, 85% of the xcvu33p's (at 150 MHz it was 79% and did not route). With
+  `SE_R` 1 and the block-RAM result FIFO, 342k (78%): placed "highly congested" (level 7) and routed at WNS -0.88 ns.
+  With PCIe Gen3 x8 as well (the target now), 302k (69%) at synthesis: met on every clock. uclk +0.006 ns, core_clk
+  +0.048, core_clk2x +0.044, xdma_aclk +0.022, pipe_clk +0.103, TXOUTCLK +0.190, hold +0.009 ns; 266k LUTs (60%),
+  319k FFs, 472.5 RAMB36 (70%), 156 URAM, 96% of the CLB sites. The router warned of congestion (level 6) and
+  needed a second round after incremental placement; placement variance of a few tens of ps applies as on the FK35.
+- On the FK33 (2026-11-27, a3 flashed, engineering-sample silicon, PCIe Gen3 x4 in this PC's slot, Windows through
+  sqrlfk.sys and `boards/sqrl-fk/host`): `otpu-selftest` ALL PASS, its Qwen3.5-0.8B model stage bit for bit with the
+  ISA simulator in int8 and fp4. Decode on the device (`tools/qual/perf.py`): Qwen3.5 0.8B 162.4 tok/s fp4, 2B 122.7,
+  4B 55.7, 9B 34.6 (the FK35's 197.7, 141.1, 68.3, 35.2); prefill of 512 tokens, 9B fp4 46.9 tok/s.
 - On the FK35 (2026-11-19, the one-port build flashed to both QSPI flashes, PCIe Gen4 x4 in this PC's slot): `otpu-selftest`
   ALL PASS (all 8 HBM channels; host->card 2.44 GB/s, card->host 5.31 GB/s), and its model stage on Qwen3.5-0.8B ALL
   PASS in int8 and fp4 ("The capital of France is Paris.", bit for bit with the ISA simulator): decode 1.53 / 1.18

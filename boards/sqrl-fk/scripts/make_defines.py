@@ -83,7 +83,7 @@ def main() -> int:
     rtl = " ".join(f"rtl/{f}" for f in T.sources(t))
     (a.out / "fk_params.tcl").write_text(
         "# written by boards/sqrl-fk/scripts/make_defines.py\n"
-        f"set TARGET {a.target}\nset PART {t.tech['part']}\n"
+        f"set TARGET {a.target}\nset PART {t.tech['part']}\nset PCIE_GEN {int(t.platform.get('pcie_gen', 4))}\n"
         f"set CORE_MHZ {mhz:g}\nset CORE_KHZ {round(mhz * 1000)}\nset UCLK_MHZ {a.uclk_mhz:g}\n"
         f"set CAW {cw}\nset RLY {rly:0{nd}x}\nset HNP {hnp}\nset SNCH {nch}\n"
         f"set BUILD_ID {bp['BUILD_ID']:08x}\nset ARCH_HASH {bp['ARCH_HASH']:08x}\n"

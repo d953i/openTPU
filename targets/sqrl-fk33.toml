@@ -1,14 +1,17 @@
 # The SQRL Forest Kitten 33: Virtex UltraScale+ HBM xcvu33p-fsvh2104-2-e (one SLR), 8 GB HBM2 in two stacks
-# (32 pseudo-channels of 256 MiB, 32 AXI3 256-bit ports), PCIe Gen4 x8 on the card's edge (the fork's FK33
-# builds were Gen3: PCIE_GEN=3). The FK35's PCB and design (targets/sqrl-fk35.toml, docs/sqrl-fk.md): one WG
-# slice on 8 channels, channel j an otpu_hbm_ch bridge on HBM mini-switch j, all in the one SLR (the bridges'
-# pipelines N 0). Vivado 2019.2. platform_id 8 (the fork's FK33 had 5, upstream's bcu1525-wg).
+# (32 pseudo-channels of 256 MiB, 32 AXI3 256-bit ports), a PCIe x8 edge. The FK35's PCB and design
+# (targets/sqrl-fk35.toml, docs/sqrl-fk.md): one WG slice on 8 channels, channel j an otpu_hbm_ch bridge on HBM
+# mini-switch j, all in the one SLR (the bridges' pipelines N 0), at the FK35's clocks (core 225, uclk 450 MHz),
+# with three area cuts for the half-size part: SE_R 1, the MXU's result FIFO in block RAM and PCIe Gen3 x8 (XDMA
+# and its SmartConnect at 256 bits: 48k LUTs, Gen4's 88k). The FK35's design whole is 85% of the xcvu33p's LUTs and
+# Gen4 with the two RTL cuts 78% (placed highly congested, routed at -0.88 ns); this one, 69% at synthesis, met
+# timing (docs/sqrl-fk.md). Vivado 2019.2. platform_id 8 (the fork's FK33 had 5, upstream's bcu1525-wg).
 
 [target]
 name = "sqrl-fk33"
 kind = "fpga"
 platform_id = 8
-description = "SQRL FK33: xcvu33p, 8 GB HBM2, XDMA Gen4 x8; 1 slice x 8 channels (WG 8)"
+description = "SQRL FK33: xcvu33p, 8 GB HBM2, XDMA Gen3 x8; 1 slice x 8 channels (WG 8)"
 
 [arch]
 S = 1
@@ -50,7 +53,7 @@ TMEM_STYLE = "ultra"
 IMEM_STYLE = "block"
 IMEM_WC_STYLE = "ultra"
 ACT_UCOLS = 0
-MXU_RF_STYLE = "distributed"
+MXU_RF_STYLE = "block"           # the result FIFO in block RAM (area: the FK35's is distributed)
 RPB = 0
 WPB = 1
 WIN = 32                        # the sequencer's window (as bcu1525-wg:bhw16)
@@ -73,7 +76,8 @@ NAT_XPOST = true
 NAT_RHB = true
 NAT_XSTG = 2                    # the adapters' staging (as the FK35's: the one SLR's
 NAT_XSTG_P = 2                  #   HBM ports at its bottom edge, the slice above)
-SE_R = 2
+SE_R = 1                        # one row group on the stream engine (area: with MXU_RF_STYLE block, 32k LUTs
+                                #   less than the FK35's SE_R 2 / distributed)
 DMA_DEPTH = 512
 
 [tech]
@@ -83,7 +87,7 @@ vendor = "xilinx"
 
 [platform]
 board = "sqrl-fk"
-core_mhz = 225.0                # as the FK35's (not built on the FK33 yet)
+core_mhz = 225.0                # as the FK35's
 mem = "hbm2"
 mem_mts = 1800
 mem_ctrl = "xilinx_hbm"         # AMD's HBM IP, 32 AXI3 256-bit ports
@@ -95,7 +99,7 @@ hbm_ports = 2                   # HBM AXI ports a channel's bridge drives: 4j an
                                 #   channel's bytes interleaved at 32 over its two halves (otpu_hbm_ch NP 2,
                                 #   CAPS2 bit26; the host's window j laid out alike). 1: port 4j alone
 host = "pcie"
-pcie_gen = 4
+pcie_gen = 3                    # Gen3 x8 (area; make_defines.py's PCIE_GEN, PCIE_GEN=4 in the environment over it)
 pcie_lanes = 8
 # The co-simulation's channel model: one bridge's 256-bit AXI3 port, 32 bytes an aclk at 450 MHz
 # (14.4 GB/s) at ~90%, HBM refresh (tRFC ~260 ns every tREFI 3.9 us), ~150 ns from the bridge's

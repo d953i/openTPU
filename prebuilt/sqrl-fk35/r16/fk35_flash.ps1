@@ -1,14 +1,16 @@
 # Flash an FK35 build of board sqrl-fk (docs/sqrl-fk.md: one plain bitstream, two MT25QU256 in dual QSPI) and bring
 # the card back on Windows. Run in an ADMINISTRATOR PowerShell:
 #   powershell -ExecutionPolicy Bypass -File fk35_flash.ps1 [-Dir <folder with the .mcs/.prm>] [-Target <hw target>]
-#                                                           [-Dna <eFUSE DNA>] [-SkipFlash]
+#                                                           [-Dna <eFUSE DNA>] [-Vivado <vivado.bat>] [-SkipFlash]
+# Vivado: -Vivado, else any Vivado or Vivado Lab Edition (free: its hardware manager programs the flash) in C:\Xilinx or
+# C:\AMDDesignTools, 2019.2 first. Step by step for anyone: docs/sqrl-fk-quickstart.md.
 # Steps: disable the card's PCI device (1E24:1533) -> program both flashes over JTAG and boot from them -> remove the
 # device, restart its root port (the new design's BARs) and rescan, booting from flash again over JTAG if Windows
 # misses the card. Only a hardware target that holds exactly one xcvu35p is touched (-Target picks one when several
 # do; -Dna also checks the device's eFUSE DNA). Logs go to %TEMP%\fk35_flash.
 param(
     [string] $Dir = $PSScriptRoot,
-    [string] $Vivado = 'C:\Xilinx\Vivado\2019.2\bin\vivado.bat',
+    [string] $Vivado = '',
     [string] $Target = '',
     [string] $Dna = '',
     [string] $RootPort = '',
@@ -17,6 +19,17 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'run this in an Administrator PowerShell' }
+if (-not $Vivado) {
+    # any edition and version loads the image (the free Lab Edition too): 2019.2 first (the build's), else the newest
+    # installed in C:\Xilinx or C:\AMDDesignTools
+    $Vivado = @(@('C:\Xilinx\Vivado\2019.2\bin\vivado.bat', 'C:\Xilinx\Vivado_Lab\2019.2\bin\vivado_lab.bat') |
+                Where-Object { Test-Path $_ }) +
+              @(Get-ChildItem -Path 'C:\Xilinx\Vivado*\*\bin\vivado*.bat', 'C:\AMDDesignTools\*\Vivado*\bin\vivado*.bat' -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -in 'vivado.bat', 'vivado_lab.bat' } | Sort-Object FullName -Descending | ForEach-Object FullName) |
+              Select-Object -First 1
+    if (-not $Vivado) { throw 'Vivado not found: install Vivado Lab Edition (free, from AMD; any version) or Vivado, or pass -Vivado <path to vivado.bat>' }
+}
+"Vivado: $Vivado"
 $rel = (Resolve-Path $Dir).Path
 foreach ($f in 'otpu_primary.mcs', 'otpu_primary.prm', 'otpu_secondary.mcs', 'otpu_secondary.prm') {
     if (-not (Test-Path (Join-Path $rel $f))) { throw "$rel has no $f" }
@@ -30,7 +43,7 @@ function Run-Vivado([string] $tclFile, [string] $log) {
     Push-Location $work
     try { & cmd /c "`"$Vivado`" -mode batch -nojournal -log `"$log`" -notrace -source `"$tclFile`" 2>&1" | Out-File -Encoding ascii "$log.out" } finally { Pop-Location }
     $rc = $LASTEXITCODE
-    Select-String -Path "$log.out" -Pattern 'FK35FLASH|Program/Verify|ERROR' | ForEach-Object { $_.Line }
+    Select-String -Path "$log.out" -Pattern 'FK35FLASH|Program/Verify|ERROR' | ForEach-Object { Write-Host $_.Line }   # (to the console: the function returns the exit code alone)
     return $rc
 }
 
@@ -44,7 +57,7 @@ set dna {$Dna}
 set found {}
 foreach t [get_hw_targets] {
   if {`$want ne {} && ![string match "*`$want*" `$t]} { continue }
-  if {[catch {open_hw_target `$t}]} { continue }
+  if {[catch {open_hw_target `$t}]} { catch {close_hw_target `$t}; continue }   ;# (a failed open leaves it open)
   set devs [get_hw_devices]
   if {[llength `$devs] == 1 && [get_property PART [lindex `$devs 0]] eq "xcvu35p"} { lappend found `$t }
   close_hw_target `$t

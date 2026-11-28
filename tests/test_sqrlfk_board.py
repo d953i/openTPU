@@ -68,13 +68,18 @@ def test_sqrlfk_target():
 
 
 def test_sqrlfk33_is_the_fk35_design_on_one_slr(tmp_path):
-    """The FK33 (targets/sqrl-fk33.toml) is the FK35's design on its one SLR: the same arch, uarch,
-    RTL and otpu_board parameters, its own part and platform id (both Gen4 x8), and make_defines.py's
-    build inputs differ only there and in the bridges' pipelines (N 0: no SLR crossing)."""
+    """The FK33 (targets/sqrl-fk33.toml) is the FK35's design on its one SLR: the same arch, RTL and
+    otpu_board parameters but for the half-size part's area cuts (SE_R 1, the MXU's result FIFO in block
+    RAM), its own part and platform id, PCIe Gen3 x8 (the FK35 Gen4 x8), and make_defines.py's build
+    inputs differ only there and in the bridges' pipelines (N 0: no SLR crossing)."""
     a, b = T.load("sqrl-fk35"), T.load("sqrl-fk33")
-    assert a.arch == b.arch and a.uarch == b.uarch and T.sources(a) == T.sources(b)
-    assert T.rtl_params(a) | {"PLATFORM": 0} == T.rtl_params(b) | {"PLATFORM": 0}
-    assert (b.tech["part"], b.platform_id, b.platform["pcie_gen"]) == ("xcvu33p-fsvh2104-2-e", 8, 4)
+    assert a.arch == b.arch and T.sources(a) == T.sources(b)
+    cuts = {"SE_R": 1, "MXU_RF_STYLE": "block"}
+    assert {k for k in a.uarch.keys() | b.uarch.keys() if a.uarch.get(k) != b.uarch.get(k)} == set(cuts)
+    assert {k: b.uarch[k] for k in cuts} == cuts
+    assert T.rtl_params(a) | {"PLATFORM": 0} | cuts == T.rtl_params(b) | {"PLATFORM": 0}
+    assert (b.tech["part"], b.platform_id, b.platform["pcie_gen"]) == ("xcvu33p-fsvh2104-2-e", 8, 3)
+    assert a.platform["pcie_gen"] == 4
     par = {}
     for t in ("sqrl-fk35", "sqrl-fk33"):
         subprocess.run([sys.executable, str(FK / "scripts" / "make_defines.py"), str(tmp_path / t),
@@ -82,8 +87,9 @@ def test_sqrlfk33_is_the_fk35_design_on_one_slr(tmp_path):
         par[t] = dict(ln.split(" ", 2)[1:] for ln in (tmp_path / t / "fk_params.tcl").read_text()
                       .splitlines() if ln.startswith("set "))
     assert (par["sqrl-fk35"]["RLY"], par["sqrl-fk33"]["RLY"]) == ("55555555", "00000000")
+    assert (par["sqrl-fk35"]["PCIE_GEN"], par["sqrl-fk33"]["PCIE_GEN"]) == ("4", "3")
     assert {k for k in par["sqrl-fk35"] if par["sqrl-fk35"][k] != par["sqrl-fk33"][k]} == \
-        {"TARGET", "PART", "RLY"}
+        {"TARGET", "PART", "RLY", "PCIE_GEN"}
 
 
 def test_sqrlfk_targets_drive_two_hbm_ports_a_channel(tmp_path):

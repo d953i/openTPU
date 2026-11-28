@@ -161,6 +161,21 @@ state ([docs/se_engine.md](docs/se_engine.md)), an instruction cache
 ([docs/icache.md](docs/icache.md)), and the studies that did not pay
 ([docs/pf500.md](docs/pf500.md), [docs/wide_mxu.md](docs/wide_mxu.md)).
 
+### On a SQRL Forest Kitten (FK33 / FK35, Virtex UltraScale+ HBM)
+
+The FK33 (xcvu33p) and FK35 (xcvu35p) carry 8 GB of HBM2 each; one slice at 225 MHz streams its weights from
+16 HBM ports. Ready-made images, a Windows driver and one script per step take you from the card to a chat on
+Windows or Linux without building anything: [docs/sqrl-fk-quickstart.md](docs/sqrl-fk-quickstart.md). Decode on the
+device, 4-bit weights:
+
+| Model | FK33 | FK35 |
+|:--|--:|--:|
+| Qwen3.5-0.8B | 162.4 tok/s | 197.7 tok/s |
+| Qwen3.5-4B | 55.7 tok/s | 68.3 tok/s |
+| Qwen3.5-9B | 34.6 tok/s | 35.2 tok/s |
+
+![Qwen3.5 on the FK33](prebuilt/sqrl-fk33/a3/fk33_qwen35.png)
+
 ## How it works
 
 ```
@@ -261,6 +276,10 @@ On a BCU1525: `make wg` in [`boards/bcu1525`](boards/bcu1525) builds the one-car
 `otpu-serve` and `otpu-smi` take `--dev` or `OTPU_DEV`; without it they use the only card that
 answers as openTPU. The 35B's front ends for one card or both are in
 [`boards/bcu1525/chat35`](boards/bcu1525/chat35).
+
+On a SQRL FK33 or FK35: flash the prebuilt image and chat, one script per step, on Windows
+(`boards\sqrl-fk\windows\1-flash-fk33.cmd` ... `5-chat.cmd`) or Linux (`boards/sqrl-fk/linux/1-flash-fk33.sh` ...
+`4-chat.sh`): [docs/sqrl-fk-quickstart.md](docs/sqrl-fk-quickstart.md).
 
 | Command | What it does |
 |:--|:--|

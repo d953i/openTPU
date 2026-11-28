@@ -79,11 +79,13 @@ set_property generic "CORE_KHZ=$CORE_KHZ CAW=$CAW RLY=64'h$RLY HNP=$HNP NCH=$SNC
 set cons $root/boards/sqrl-fk/constraints
 set bcu $root/boards/bcu1525/constraints
 add_files -fileset constrs_1 -norecurse $cons/sqrl_fk_pins.xdc
-set late [list $bcu/otpu_hbm_ch.tcl $cons/otpu_axi3_hmux.tcl $bcu/otpu_mxu_stage.tcl $root/boards/ypcb-00338/constraints/otpu_clk2x.tcl \
+# (the host windows' muxes, otpu_axi3_hmux, exist at 16 channels only: their scoped file would find no cell at 8)
+set late [list $bcu/otpu_hbm_ch.tcl $bcu/otpu_mxu_stage.tcl $root/boards/ypcb-00338/constraints/otpu_clk2x.tcl \
                $cons/sqrl_fk_floorplan.tcl $cons/sqrl_fk_top.tcl]
+if {$SNCH == 16} { set late [linsert $late 1 $cons/otpu_axi3_hmux.tcl] }
 add_files -fileset constrs_1 -norecurse $late
 set_property SCOPED_TO_REF otpu_hbm_cs [get_files $bcu/otpu_hbm_ch.tcl]
-set_property SCOPED_TO_REF otpu_axi3_hmux [get_files $cons/otpu_axi3_hmux.tcl]
+if {$SNCH == 16} { set_property SCOPED_TO_REF otpu_axi3_hmux [get_files $cons/otpu_axi3_hmux.tcl] }
 set_property SCOPED_TO_REF otpu_mxu_stage [get_files $bcu/otpu_mxu_stage.tcl]
 set_property PROCESSING_ORDER LATE [get_files $late]
 set_property USED_IN_SYNTHESIS false [get_files $late]

@@ -1,0 +1,11 @@
+# The FK host's Python packages for models (chat, serve, the self-test's model stage), beside the repository's own
+# (pip install -e .): Windows, build\venv-win by setup_win_python.ps1 (boards\sqrl-fk\windows\setup.cmd); Linux,
+# build/venv-linux by boards/sqrl-fk/linux/setup.sh (torch from PyTorch's CPU index there). Their dependencies are left
+# to pip. The self-test without models and otpu-smi need numpy alone.
+torch==2.14.1
+transformers==5.20.1
+safetensors==0.8.0
+tokenizers==0.23.3
+huggingface_hub==2.2.0
+textual==8.2.8
+numpy
